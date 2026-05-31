@@ -274,7 +274,8 @@ fn line_turn_id(path: &Path, line_number: usize) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use serde_json::json;
+    use std::{fs, path::Path};
 
     use tempfile::tempdir;
 
@@ -282,6 +283,67 @@ mod tests {
     use crate::store::AgentPlanState;
 
     use super::import_codex_history;
+
+    fn json_line(value: &serde_json::Value) -> String {
+        serde_json::to_string(value).expect("serialize jsonl event")
+    }
+
+    fn session_meta_line(cwd: &Path, branch: &str) -> String {
+        json_line(&json!({
+            "type": "session_meta",
+            "payload": {
+                "id": "session",
+                "cwd": cwd.to_string_lossy().into_owned(),
+                "git": {
+                    "branch": branch,
+                    "repository_url": "https://github.com/example/repo.git"
+                }
+            }
+        }))
+    }
+
+    fn message_line(role: &str, content_type: &str, text: &str) -> String {
+        json_line(&json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": role,
+                "content": [{
+                    "type": content_type,
+                    "text": text
+                }]
+            }
+        }))
+    }
+
+    fn task_complete_line(timestamp: &str, text: &str) -> String {
+        json_line(&json!({
+            "timestamp": timestamp,
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "last_agent_message": text
+            }
+        }))
+    }
+
+    fn write_jsonl(path: &Path, lines: &[String]) {
+        fs::write(path, format!("{}\n", lines.join("\n"))).expect("write session");
+    }
+
+    #[test]
+    fn test_jsonl_helpers_escape_windows_paths() {
+        let line = session_meta_line(Path::new(r"C:\Users\dev\repo"), "feature/test");
+        let event = serde_json::from_str::<serde_json::Value>(&line).expect("parse session meta");
+
+        assert_eq!(
+            event
+                .get("payload")
+                .and_then(|payload| payload.get("cwd"))
+                .and_then(serde_json::Value::as_str),
+            Some(r"C:\Users\dev\repo")
+        );
+    }
 
     #[test]
     fn imports_marked_assistant_plans_and_skips_duplicates() {
@@ -293,19 +355,28 @@ mod tests {
         fs::create_dir_all(&session_dir).expect("session dir");
 
         let session = session_dir.join("rollout-2026-05-31T00-00-00-session.jsonl");
-        fs::write(
+        write_jsonl(
             &session,
-            format!(
-                r#"{{"type":"session_meta","payload":{{"id":"session","cwd":"{}","git":{{"branch":"feature/test","repository_url":"https://github.com/example/repo.git"}}}}}}
-{{"type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"<proposed_plan>ignore user text</proposed_plan>"}}]}}}}
-{{"type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"not a marked plan"}}]}}}}
-{{"type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"<proposed_plan>\n# Backfill\n\n- Import old plans\n- Keep api_key=secret-value private\n</proposed_plan>"}}]}}}}
-{{"type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"<proposed_plan>\n# Backfill\n\n- Import old plans\n- Keep api_key=secret-value private\n</proposed_plan>"}}]}}}}
-"#,
-                repo_root.display()
-            ),
-        )
-        .expect("write session");
+            &[
+                session_meta_line(&repo_root, "feature/test"),
+                message_line(
+                    "user",
+                    "input_text",
+                    "<proposed_plan>ignore user text</proposed_plan>",
+                ),
+                message_line("assistant", "output_text", "not a marked plan"),
+                message_line(
+                    "assistant",
+                    "output_text",
+                    "<proposed_plan>\n# Backfill\n\n- Import old plans\n- Keep api_key=secret-value private\n</proposed_plan>",
+                ),
+                message_line(
+                    "assistant",
+                    "output_text",
+                    "<proposed_plan>\n# Backfill\n\n- Import old plans\n- Keep api_key=secret-value private\n</proposed_plan>",
+                ),
+            ],
+        );
 
         let context = GitContext {
             repo_root,
@@ -341,16 +412,17 @@ mod tests {
         fs::create_dir_all(&repo_root).expect("repo root");
         fs::create_dir_all(&session_dir).expect("session dir");
 
-        fs::write(
-            session_dir.join("rollout-2026-05-31T00-00-00-other.jsonl"),
-            format!(
-                r#"{{"type":"session_meta","payload":{{"id":"session","cwd":"{}","git":{{"branch":"feature/other","repository_url":"https://github.com/example/repo.git"}}}}}}
-{{"type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"<proposed_plan>\n# Other\n\n- Wrong branch\n</proposed_plan>"}}]}}}}
-"#,
-                repo_root.display()
-            ),
-        )
-        .expect("write session");
+        write_jsonl(
+            &session_dir.join("rollout-2026-05-31T00-00-00-other.jsonl"),
+            &[
+                session_meta_line(&repo_root, "feature/other"),
+                message_line(
+                    "assistant",
+                    "output_text",
+                    "<proposed_plan>\n# Other\n\n- Wrong branch\n</proposed_plan>",
+                ),
+            ],
+        );
 
         let context = GitContext {
             repo_root,
@@ -377,16 +449,16 @@ mod tests {
         fs::create_dir_all(&repo_root).expect("repo root");
         fs::create_dir_all(&session_dir).expect("session dir");
 
-        fs::write(
-            session_dir.join("rollout-2026-05-31T00-00-00-complete.jsonl"),
-            format!(
-                r#"{{"type":"session_meta","payload":{{"id":"session","cwd":"{}","git":{{"branch":"feature/test","repository_url":"https://github.com/example/repo.git"}}}}}}
-{{"timestamp":"2026-05-31T12:34:56Z","type":"event_msg","payload":{{"type":"task_complete","last_agent_message":"<proposed_plan>\n# Complete\n\n- Import completion text\n</proposed_plan>"}}}}
-"#,
-                repo_root.display()
-            ),
-        )
-        .expect("write session");
+        write_jsonl(
+            &session_dir.join("rollout-2026-05-31T00-00-00-complete.jsonl"),
+            &[
+                session_meta_line(&repo_root, "feature/test"),
+                task_complete_line(
+                    "2026-05-31T12:34:56Z",
+                    "<proposed_plan>\n# Complete\n\n- Import completion text\n</proposed_plan>",
+                ),
+            ],
+        );
 
         let context = GitContext {
             repo_root,
@@ -443,16 +515,17 @@ mod tests {
         fs::create_dir_all(&repo_root).expect("repo root");
         fs::create_dir_all(&session_dir).expect("session dir");
 
-        fs::write(
-            session_dir.join("rollout-2026-05-31T00-00-00-rendered.jsonl"),
-            format!(
-                r#"{{"type":"session_meta","payload":{{"id":"session","cwd":"{}","git":{{"branch":"feature/test","repository_url":"https://github.com/example/repo.git"}}}}}}
-{{"type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"<proposed_plan>\n<!-- plan-to-git:start -->\n## Agent Plan Stack\n<!-- plan-to-git:end -->\n</proposed_plan>"}}]}}}}
-"#,
-                repo_root.display()
-            ),
-        )
-        .expect("write session");
+        write_jsonl(
+            &session_dir.join("rollout-2026-05-31T00-00-00-rendered.jsonl"),
+            &[
+                session_meta_line(&repo_root, "feature/test"),
+                message_line(
+                    "assistant",
+                    "output_text",
+                    "<proposed_plan>\n<!-- plan-to-git:start -->\n## Agent Plan Stack\n<!-- plan-to-git:end -->\n</proposed_plan>",
+                ),
+            ],
+        );
 
         let context = GitContext {
             repo_root,
