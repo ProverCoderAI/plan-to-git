@@ -44,6 +44,16 @@ fn tagged_plan_ignores_inline_tag_examples() {
 }
 
 #[test]
+fn extracts_single_line_tagged_plan() {
+    let message = "<proposed_plan># Inline\n- Keep it</proposed_plan>";
+
+    let plans = extract_marked_plans(message);
+
+    assert_eq!(plans.len(), 1);
+    assert!(plans[0].content.contains("Keep it"));
+}
+
+#[test]
 fn extracts_accepted_plan_headings() {
     let message = r"
 ## Accepted Plan

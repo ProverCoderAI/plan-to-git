@@ -40,37 +40,48 @@ pub fn extract_questions(message: &str) -> Vec<String> {
 }
 
 fn extract_tagged_plans(message: &str) -> Vec<CapturedPlan> {
+    let lower = message.to_lowercase();
+    let open_tag = "<proposed_plan>";
+    let close_tag = "</proposed_plan>";
+    let mut cursor = 0;
     let mut plans = Vec::new();
-    let mut content_lines: Option<Vec<&str>> = None;
 
-    for line in message.lines() {
-        let trimmed = line.trim();
-        if trimmed.eq_ignore_ascii_case("<proposed_plan>") {
-            content_lines = Some(Vec::new());
-            continue;
-        }
+    while let Some(relative_start) = lower[cursor..].find(open_tag) {
+        let content_start = cursor + relative_start + open_tag.len();
+        let mut close_cursor = content_start;
 
-        if trimmed.eq_ignore_ascii_case("</proposed_plan>") {
-            let Some(lines) = content_lines.take() else {
-                continue;
+        let Some(content_end) = (loop {
+            let Some(relative_end) = lower[close_cursor..].find(close_tag) else {
+                break None;
             };
-            let content = lines.join("\n").trim().to_owned();
-            if content.is_empty() {
-                continue;
+            let candidate_start = close_cursor + relative_end;
+            let candidate_end = candidate_start + close_tag.len();
+            if closes_plan_block(message, candidate_end) {
+                break Some(candidate_start);
             }
-            plans.push(CapturedPlan {
-                title: first_heading(&content),
-                content,
-            });
-            continue;
-        }
+            close_cursor = candidate_end;
+        }) else {
+            break;
+        };
 
-        if let Some(lines) = content_lines.as_mut() {
-            lines.push(line);
+        let content = message[content_start..content_end].trim();
+        if !content.is_empty() {
+            plans.push(CapturedPlan {
+                title: first_heading(content),
+                content: content.to_owned(),
+            });
         }
+        cursor = content_end + close_tag.len();
     }
 
     plans
+}
+
+fn closes_plan_block(message: &str, close_tag_end: usize) -> bool {
+    message[close_tag_end..]
+        .lines()
+        .next()
+        .is_none_or(|rest_of_line| rest_of_line.trim().is_empty())
 }
 
 fn extract_accepted_plan_headings(message: &str) -> Vec<CapturedPlan> {
