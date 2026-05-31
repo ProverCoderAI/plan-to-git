@@ -72,6 +72,25 @@ Do not include this.
 }
 
 #[test]
+fn extracts_localized_accepted_plan_headings() {
+    let message = r"
+## Принятый план
+- Сохранить только подтвержденный план.
+- Синхронизировать его с PR.
+
+## Итог
+Не включать этот раздел.
+";
+
+    let plans = extract_marked_plans(message);
+
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].title.as_deref(), Some("Принятый план"));
+    assert!(plans[0].content.contains("подтвержденный план"));
+    assert!(!plans[0].content.contains("Итог"));
+}
+
+#[test]
 fn extracts_accepted_plan_label_until_next_heading() {
     let message = r"
 Accepted Plan:
