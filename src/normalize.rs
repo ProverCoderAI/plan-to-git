@@ -40,26 +40,34 @@ pub fn extract_questions(message: &str) -> Vec<String> {
 }
 
 fn extract_tagged_plans(message: &str) -> Vec<CapturedPlan> {
-    let lower = message.to_lowercase();
-    let open_tag = "<proposed_plan>";
-    let close_tag = "</proposed_plan>";
-    let mut cursor = 0;
     let mut plans = Vec::new();
+    let mut content_lines: Option<Vec<&str>> = None;
 
-    while let Some(relative_start) = lower[cursor..].find(open_tag) {
-        let content_start = cursor + relative_start + open_tag.len();
-        let Some(relative_end) = lower[content_start..].find(close_tag) else {
-            break;
-        };
-        let content_end = content_start + relative_end;
-        let content = message[content_start..content_end].trim();
-        if !content.is_empty() {
-            plans.push(CapturedPlan {
-                title: first_heading(content),
-                content: content.to_owned(),
-            });
+    for line in message.lines() {
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case("<proposed_plan>") {
+            content_lines = Some(Vec::new());
+            continue;
         }
-        cursor = content_end + close_tag.len();
+
+        if trimmed.eq_ignore_ascii_case("</proposed_plan>") {
+            let Some(lines) = content_lines.take() else {
+                continue;
+            };
+            let content = lines.join("\n").trim().to_owned();
+            if content.is_empty() {
+                continue;
+            }
+            plans.push(CapturedPlan {
+                title: first_heading(&content),
+                content,
+            });
+            continue;
+        }
+
+        if let Some(lines) = content_lines.as_mut() {
+            lines.push(line);
+        }
     }
 
     plans

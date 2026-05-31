@@ -27,6 +27,23 @@ after
 }
 
 #[test]
+fn tagged_plan_ignores_inline_tag_examples() {
+    let message = r"
+<proposed_plan>
+# Parser Plan
+
+- Capture `<proposed_plan>...</proposed_plan>` examples as prose.
+- Continue until the real closing marker.
+</proposed_plan>
+";
+
+    let plans = extract_marked_plans(message);
+
+    assert_eq!(plans.len(), 1);
+    assert!(plans[0].content.contains("Continue until the real"));
+}
+
+#[test]
 fn extracts_accepted_plan_headings() {
     let message = r"
 ## Accepted Plan
