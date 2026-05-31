@@ -89,6 +89,7 @@ pub struct NewPlanItem {
     pub head_sha: Option<String>,
     pub session_id: Option<String>,
     pub turn_id: Option<String>,
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,7 +161,7 @@ impl AgentPlanState {
             session_id: new_item.session_id,
             turn_id: new_item.turn_id,
             content_hash,
-            created_at: timestamp(),
+            created_at: new_item.created_at.unwrap_or_else(timestamp),
         });
 
         true

@@ -133,6 +133,39 @@ mod unix {
         assert!(request.contains("Update PR body"));
     }
 
+    #[test]
+    fn import_codex_backfills_history_once_without_syncing() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        let codex_home = temp_dir.path().join("codex");
+        let session_dir = codex_home.join("sessions/2026/05/31");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        fs::create_dir_all(&session_dir).expect("session dir");
+        write_fake_git(&bin_dir, &repo_dir);
+
+        fs::write(
+            session_dir.join("rollout-2026-05-31T00-00-00-session.jsonl"),
+            format!(
+                r#"{{"type":"session_meta","payload":{{"id":"session","cwd":"{}","git":{{"branch":"feature/test","repository_url":"https://github.com/example/repo.git"}}}}}}
+{{"type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"<proposed_plan>\n# Archived Plan\n\n- Import archived plan\n</proposed_plan>"}}]}}}}
+"#,
+                repo_dir.display()
+            ),
+        )
+        .expect("write session");
+
+        let first = run_import_codex(&repo_dir, &bin_dir, &codex_home);
+        assert!(first.contains("found 1 plan(s), added 1"));
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
+        assert!(state.contains("Import archived plan"));
+
+        let second = run_import_codex(&repo_dir, &bin_dir, &codex_home);
+        assert!(second.contains("found 1 plan(s), added 0"));
+        assert!(second.contains("skipped 1 duplicate(s)"));
+    }
+
     fn run_hook(repo_dir: &Path, bin_dir: &Path, payload: &str) {
         let mut child = Command::new(env!("CARGO_BIN_EXE_plan-to-git"))
             .arg("hook")
@@ -155,6 +188,21 @@ mod unix {
         let output = child.wait_with_output().expect("wait");
         assert!(output.status.success());
         assert!(output.stdout.is_empty());
+    }
+
+    fn run_import_codex(repo_dir: &Path, bin_dir: &Path, codex_home: &Path) -> String {
+        let output = Command::new(env!("CARGO_BIN_EXE_plan-to-git"))
+            .arg("import-codex")
+            .arg("--codex-home")
+            .arg(codex_home)
+            .arg("--no-sync")
+            .current_dir(repo_dir)
+            .env("PATH", path_with_fake_bin(bin_dir))
+            .output()
+            .expect("run import-codex");
+
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).expect("stdout")
     }
 
     fn write_fake_git(bin_dir: &Path, repo_dir: &Path) {

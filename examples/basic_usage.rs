@@ -16,6 +16,7 @@ fn main() {
         head_sha: Some("abcdef1234567890".to_owned()),
         session_id: None,
         turn_id: None,
+        created_at: None,
     });
 
     println!("{}", render_plan_block(&state));

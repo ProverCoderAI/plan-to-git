@@ -17,6 +17,8 @@ plan-to-git hook --source codex < hook-payload.json
 plan-to-git show
 plan-to-git render
 plan-to-git sync
+plan-to-git import-codex --dry-run
+plan-to-git import-codex
 plan-to-git clear --yes
 ```
 
@@ -56,4 +58,6 @@ If only one marker exists, sync fails rather than risking corruption of the huma
 
 ## Safety
 
-The tool does not scrape raw `~/.codex` or `~/.claude` transcripts. It only uses stable hook payload fields and explicitly marked plan text. Captured content is redacted before local storage and PR sync.
+The hook path only uses stable hook payload fields and explicitly marked plan text. `import-codex` can backfill previous plans from `~/.codex/sessions`, but it only reads assistant message events from sessions that match the current repository and branch, and it still imports only explicit markers such as `<proposed_plan>...</proposed_plan>` or `## Accepted Plan`.
+
+Captured content is redacted before local storage and PR sync. `.agent-plan.json` also acts as the sent-plan registry: content hashes prevent the same plan from being added and uploaded again for the same branch.

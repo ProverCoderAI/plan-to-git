@@ -112,6 +112,7 @@ fn state_deduplicates_plans_and_records_decisions() {
         head_sha: Some("abc123".to_owned()),
         session_id: Some("session".to_owned()),
         turn_id: Some("turn".to_owned()),
+        created_at: None,
     });
     let duplicate = state.add_plan(NewPlanItem {
         source: AgentSource::Codex,
@@ -121,6 +122,7 @@ fn state_deduplicates_plans_and_records_decisions() {
         head_sha: Some("abc123".to_owned()),
         session_id: Some("session".to_owned()),
         turn_id: Some("turn".to_owned()),
+        created_at: None,
     });
 
     assert!(first);
@@ -167,6 +169,7 @@ fn render_filters_items_to_current_branch() {
         head_sha: Some("abcdef1234567890".to_owned()),
         session_id: None,
         turn_id: None,
+        created_at: None,
     }));
     assert!(state.add_plan(NewPlanItem {
         source: AgentSource::Codex,
@@ -176,6 +179,7 @@ fn render_filters_items_to_current_branch() {
         head_sha: Some("1234567890abcdef".to_owned()),
         session_id: None,
         turn_id: None,
+        created_at: None,
     }));
 
     let rendered = render_plan_block(&state);

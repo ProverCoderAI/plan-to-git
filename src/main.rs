@@ -1,8 +1,10 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fs;
 use std::io::{self, Read};
+use std::path::PathBuf;
 
 use plan_to_git::capture;
+use plan_to_git::codex_history::{self, CodexHistoryImportOutcome};
 use plan_to_git::error::{AppError, AppResult};
 use plan_to_git::git;
 use plan_to_git::github::{self, SyncStatus};
@@ -25,6 +27,19 @@ enum Commands {
     Hook {
         #[arg(long, value_enum)]
         source: HookSource,
+    },
+    /// Import explicitly marked plans from previous Codex session files.
+    #[command(visible_alias = "backfill-codex")]
+    ImportCodex {
+        /// Codex home directory. Defaults to `CODEX_HOME` or `~/.codex`.
+        #[arg(long)]
+        codex_home: Option<PathBuf>,
+        /// Scan and report what would be imported without writing or syncing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Save imported plans locally without syncing the pull request body.
+        #[arg(long)]
+        no_sync: bool,
     },
     /// Sync the local plan stack into the current branch pull request.
     Sync,
@@ -65,6 +80,38 @@ fn main() {
 fn run(command: &Commands) -> AppResult<()> {
     match command {
         Commands::Hook { .. } => Ok(()),
+        Commands::ImportCodex {
+            codex_home,
+            dry_run,
+            no_sync,
+        } => {
+            let (context, state_path) = state_context()?;
+            let mut state = load_state(&state_path)?;
+            state.set_context(
+                context.repo_slug.clone(),
+                context.branch.clone(),
+                context.head_sha.clone(),
+            );
+
+            let codex_home = codex_home
+                .clone()
+                .or_else(default_codex_home)
+                .ok_or_else(|| AppError::new("cannot locate Codex home directory"))?;
+            let outcome = codex_history::import_codex_history(&codex_home, &context, &mut state)?;
+
+            if !*dry_run && outcome.plans_added > 0 {
+                save_state(&state_path, &state)?;
+            }
+
+            print_import_outcome(&outcome, *dry_run);
+
+            if *dry_run || *no_sync || outcome.plans_found == 0 {
+                return Ok(());
+            }
+
+            print_sync_status(&github::sync_state(&context, &state)?);
+            Ok(())
+        }
         Commands::Sync => {
             let (context, state_path) = state_context()?;
             let mut state = load_state(&state_path)?;
@@ -137,4 +184,23 @@ fn print_sync_status(status: &SyncStatus) {
         SyncStatus::Unchanged { number } => println!("pull request #{number} already up to date"),
         SyncStatus::Updated { number } => println!("updated pull request #{number}"),
     }
+}
+
+fn default_codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
+}
+
+fn print_import_outcome(outcome: &CodexHistoryImportOutcome, dry_run: bool) {
+    let mode = if dry_run { "dry-run" } else { "import" };
+    println!(
+        "{mode}: scanned {} file(s), matched {} current repo/branch file(s), found {} plan(s), added {}, skipped {} duplicate(s), parse errors {}",
+        outcome.files_scanned,
+        outcome.files_matched,
+        outcome.plans_found,
+        outcome.plans_added,
+        outcome.duplicates,
+        outcome.parse_errors
+    );
 }

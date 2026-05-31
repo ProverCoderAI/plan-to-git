@@ -62,6 +62,7 @@ pub fn process_codex_hook(input: &str) -> AppResult<HookOutcome> {
                         head_sha: context.head_sha.clone(),
                         session_id: hook_input.session_id.clone(),
                         turn_id: hook_input.turn_id.clone(),
+                        created_at: None,
                     });
                     if added {
                         captured_plans += 1;

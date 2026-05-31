@@ -1,4 +1,5 @@
 pub mod capture;
+pub mod codex_history;
 pub mod error;
 pub mod git;
 pub mod github;
