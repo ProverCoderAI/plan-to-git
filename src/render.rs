@@ -36,7 +36,7 @@ pub fn render_plan_block(state: &AgentPlanState) -> String {
             output.push_str(" - Captured: ");
             output.push_str(&item.created_at);
             output.push_str("\n\n");
-            output.push_str(item.content.trim());
+            output.push_str(&escape_plan_markers(item.content.trim()));
             output.push_str("\n\n");
         }
     }
@@ -85,4 +85,10 @@ const fn source_label(source: AgentSource) -> &'static str {
 
 fn short_sha(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
+}
+
+fn escape_plan_markers(content: &str) -> String {
+    content
+        .replace(START_MARKER, "&lt;!-- plan-to-git:start --&gt;")
+        .replace(END_MARKER, "&lt;!-- plan-to-git:end --&gt;")
 }

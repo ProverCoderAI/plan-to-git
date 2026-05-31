@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::error::AppResult;
 use crate::git::{parse_github_slug, GitContext};
 use crate::normalize::extract_marked_plans;
+use crate::pr_body::{END_MARKER, START_MARKER};
 use crate::store::{AgentPlanState, AgentSource, NewPlanItem};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +18,7 @@ pub struct CodexHistoryImportOutcome {
     pub plans_found: usize,
     pub plans_added: usize,
     pub duplicates: usize,
+    pub rendered_stacks_skipped: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +42,7 @@ pub fn import_codex_history(
         plans_found: 0,
         plans_added: 0,
         duplicates: 0,
+        rendered_stacks_skipped: 0,
     };
 
     let mut files = codex_session_files(codex_home)?;
@@ -108,6 +111,10 @@ fn import_session_file(
 
         for plan in extract_marked_plans(&message) {
             outcome.plans_found += 1;
+            if looks_like_rendered_plan_stack(&plan.content) {
+                outcome.rendered_stacks_skipped += 1;
+                continue;
+            }
             let added = state.add_plan(NewPlanItem {
                 source: AgentSource::Codex,
                 title: plan.title,
@@ -155,6 +162,12 @@ fn collect_jsonl_files(dir: &Path, files: &mut Vec<PathBuf>) -> AppResult<()> {
         }
     }
     Ok(())
+}
+
+fn looks_like_rendered_plan_stack(content: &str) -> bool {
+    content.contains("## Agent Plan Stack")
+        && content.contains(START_MARKER)
+        && content.contains(END_MARKER)
 }
 
 fn parse_session_metadata(event: &Value) -> SessionMetadata {
@@ -418,6 +431,41 @@ mod tests {
         let outcome = import_codex_history(&codex_home, &context, &mut state).expect("import");
 
         assert_eq!(outcome.files_matched, 0);
+        assert!(state.items.is_empty());
+    }
+
+    #[test]
+    fn skips_rendered_plan_stack_blocks() {
+        let temp_dir = tempdir().expect("temp dir");
+        let repo_root = temp_dir.path().join("repo");
+        let codex_home = temp_dir.path().join("codex");
+        let session_dir = codex_home.join("sessions/2026/05/31");
+        fs::create_dir_all(&repo_root).expect("repo root");
+        fs::create_dir_all(&session_dir).expect("session dir");
+
+        fs::write(
+            session_dir.join("rollout-2026-05-31T00-00-00-rendered.jsonl"),
+            format!(
+                r#"{{"type":"session_meta","payload":{{"id":"session","cwd":"{}","git":{{"branch":"feature/test","repository_url":"https://github.com/example/repo.git"}}}}}}
+{{"type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"<proposed_plan>\n<!-- plan-to-git:start -->\n## Agent Plan Stack\n<!-- plan-to-git:end -->\n</proposed_plan>"}}]}}}}
+"#,
+                repo_root.display()
+            ),
+        )
+        .expect("write session");
+
+        let context = GitContext {
+            repo_root,
+            repo_slug: Some("example/repo".to_owned()),
+            branch: Some("feature/test".to_owned()),
+            head_sha: Some("abcdef".to_owned()),
+        };
+        let mut state = AgentPlanState::default();
+
+        let outcome = import_codex_history(&codex_home, &context, &mut state).expect("import");
+
+        assert_eq!(outcome.plans_found, 1);
+        assert_eq!(outcome.rendered_stacks_skipped, 1);
         assert!(state.items.is_empty());
     }
 }

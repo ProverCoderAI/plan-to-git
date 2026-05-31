@@ -217,6 +217,28 @@ fn render_filters_items_to_current_branch() {
 }
 
 #[test]
+fn render_escapes_nested_plan_markers() {
+    let mut state = AgentPlanState::default();
+    state.set_context(None, Some("feature/current".to_owned()), None);
+    assert!(state.add_plan(NewPlanItem {
+        source: AgentSource::Codex,
+        title: Some("Markers".to_owned()),
+        content: format!("inside {START_MARKER} and {END_MARKER}"),
+        branch: Some("feature/current".to_owned()),
+        head_sha: None,
+        session_id: None,
+        turn_id: None,
+        created_at: None,
+    }));
+
+    let rendered = render_plan_block(&state);
+
+    assert_eq!(rendered.matches(START_MARKER).count(), 1);
+    assert_eq!(rendered.matches(END_MARKER).count(), 1);
+    assert!(rendered.contains("&lt;!-- plan-to-git:start --&gt;"));
+}
+
+#[test]
 fn pr_body_appends_and_replaces_marker_block() {
     let original = "Existing body";
     let block = format!("{START_MARKER}\n## Agent Plan Stack\n{END_MARKER}");
@@ -229,6 +251,21 @@ fn pr_body_appends_and_replaces_marker_block() {
     let replaced = upsert_marker_block(&appended, &replacement).expect("replace should work");
     assert!(replaced.contains("## Updated"));
     assert!(!replaced.contains("## Agent Plan Stack"));
+}
+
+#[test]
+fn pr_body_replaces_through_last_marker() {
+    let original =
+        format!("Intro\n\n{START_MARKER}\nold\n{END_MARKER}\nstale\n{END_MARKER}\nOutro");
+    let block = format!("{START_MARKER}\nnew\n{END_MARKER}");
+
+    let replaced = upsert_marker_block(&original, &block).expect("replace should work");
+
+    assert!(replaced.contains("Intro"));
+    assert!(replaced.contains("new"));
+    assert!(replaced.contains("Outro"));
+    assert!(!replaced.contains("old"));
+    assert!(!replaced.contains("stale"));
 }
 
 #[test]

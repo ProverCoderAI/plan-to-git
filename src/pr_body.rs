@@ -5,7 +5,7 @@ pub const END_MARKER: &str = "<!-- plan-to-git:end -->";
 
 pub fn upsert_marker_block(body: &str, block: &str) -> AppResult<String> {
     let start = body.find(START_MARKER);
-    let end = body.find(END_MARKER);
+    let end = body.rfind(END_MARKER);
 
     match (start, end) {
         (None, None) => Ok(append_block(body, block)),

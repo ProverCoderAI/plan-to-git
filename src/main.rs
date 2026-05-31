@@ -195,12 +195,13 @@ fn default_codex_home() -> Option<PathBuf> {
 fn print_import_outcome(outcome: &CodexHistoryImportOutcome, dry_run: bool) {
     let mode = if dry_run { "dry-run" } else { "import" };
     println!(
-        "{mode}: scanned {} file(s), matched {} current repo/branch file(s), found {} plan(s), added {}, skipped {} duplicate(s), parse errors {}",
+        "{mode}: scanned {} file(s), matched {} current repo/branch file(s), found {} plan(s), added {}, skipped {} duplicate(s), skipped {} rendered stack(s), parse errors {}",
         outcome.files_scanned,
         outcome.files_matched,
         outcome.plans_found,
         outcome.plans_added,
         outcome.duplicates,
+        outcome.rendered_stacks_skipped,
         outcome.parse_errors
     );
 }
