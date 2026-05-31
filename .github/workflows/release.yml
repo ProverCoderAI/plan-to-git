@@ -153,6 +153,7 @@ jobs:
         run: cargo install rust-script
 
       - name: Cache cargo registry
+        continue-on-error: true
         uses: actions/cache@v5
         with:
           path: |
@@ -192,6 +193,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry
+        continue-on-error: true
         uses: actions/cache@v5
         with:
           path: |
@@ -231,6 +233,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Cache cargo registry
+        continue-on-error: true
         uses: actions/cache@v5
         with:
           path: |
@@ -271,6 +274,7 @@ jobs:
         run: cargo install rust-script
 
       - name: Cache cargo registry
+        continue-on-error: true
         uses: actions/cache@v5
         with:
           path: |
