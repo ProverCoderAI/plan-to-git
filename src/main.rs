@@ -1,18 +1,140 @@
-use lino_arguments::Parser;
+use clap::{Parser, Subcommand, ValueEnum};
+use std::fs;
+use std::io::{self, Read};
 
-use example_sum_package_name::sum;
+use plan_to_git::capture;
+use plan_to_git::error::{AppError, AppResult};
+use plan_to_git::git;
+use plan_to_git::github::{self, SyncStatus};
+use plan_to_git::render::render_plan_block;
+use plan_to_git::store::{load_state, save_state, STATE_FILE_NAME};
 
 #[derive(Parser, Debug)]
-#[command(name = "example-sum-package-name", about = "Sum two numbers")]
-struct Args {
-    #[arg(long, env = "A", default_value = "0", allow_hyphen_values = true)]
-    a: i64,
+#[command(
+    name = "plan-to-git",
+    about = "Capture agent plans and sync them to GitHub pull requests"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    #[arg(long, env = "B", default_value = "0", allow_hyphen_values = true)]
-    b: i64,
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Process an agent hook JSON payload from stdin.
+    Hook {
+        #[arg(long, value_enum)]
+        source: HookSource,
+    },
+    /// Sync the local plan stack into the current branch pull request.
+    Sync,
+    /// Print the local plan stack JSON.
+    Show,
+    /// Render the pull request markdown block.
+    Render,
+    /// Clear local plan stack state.
+    Clear {
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum HookSource {
+    Codex,
 }
 
 fn main() {
-    let args = Args::parse();
-    println!("{}", sum(args.a, args.b));
+    let cli = Cli::parse();
+
+    match &cli.command {
+        Commands::Hook { source } => {
+            if let Err(error) = run_hook(*source) {
+                eprintln!("plan-to-git hook error: {error}");
+            }
+        }
+        command => {
+            if let Err(error) = run(command) {
+                eprintln!("plan-to-git error: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn run(command: &Commands) -> AppResult<()> {
+    match command {
+        Commands::Hook { .. } => Ok(()),
+        Commands::Sync => {
+            let (context, state_path) = state_context()?;
+            let mut state = load_state(&state_path)?;
+            state.set_context(
+                context.repo_slug.clone(),
+                context.branch.clone(),
+                context.head_sha.clone(),
+            );
+            save_state(&state_path, &state)?;
+            print_sync_status(&github::sync_state(&context, &state)?);
+            Ok(())
+        }
+        Commands::Show => {
+            let (_, state_path) = state_context()?;
+            let state = load_state(&state_path)?;
+            println!("{}", serde_json::to_string_pretty(&state)?);
+            Ok(())
+        }
+        Commands::Render => {
+            let (_, state_path) = state_context()?;
+            let state = load_state(&state_path)?;
+            println!("{}", render_plan_block(&state));
+            Ok(())
+        }
+        Commands::Clear { yes } => {
+            if !*yes {
+                return Err(AppError::new("refusing to clear state without --yes").into());
+            }
+            let (_, state_path) = state_context()?;
+            if state_path.exists() {
+                fs::remove_file(state_path)?;
+            }
+            println!("cleared {STATE_FILE_NAME}");
+            Ok(())
+        }
+    }
+}
+
+fn run_hook(source: HookSource) -> AppResult<()> {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input)?;
+
+    match source {
+        HookSource::Codex => {
+            let outcome = capture::process_codex_hook(&input)?;
+            eprintln!(
+                "plan-to-git: captured {} plan(s), {} decision(s), {} pending question set(s), sync={:?}",
+                outcome.captured_plans,
+                outcome.captured_decisions,
+                outcome.pending_questions,
+                outcome.sync_status
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn state_context() -> AppResult<(git::GitContext, std::path::PathBuf)> {
+    let cwd = std::env::current_dir()?;
+    let context = git::discover(&cwd)?;
+    let state_path = context.repo_root.join(STATE_FILE_NAME);
+    Ok((context, state_path))
+}
+
+fn print_sync_status(status: &SyncStatus) {
+    match status {
+        SyncStatus::NoItems => println!("no captured plan items to sync"),
+        SyncStatus::NoPullRequest => println!("no pull request found for the current branch"),
+        SyncStatus::Unchanged { number } => println!("pull request #{number} already up to date"),
+        SyncStatus::Updated { number } => println!("updated pull request #{number}"),
+    }
 }
