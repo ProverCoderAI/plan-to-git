@@ -45,7 +45,7 @@ pub fn sync_state(context: &GitContext, state: &AgentPlanState) -> AppResult<Syn
         });
     }
 
-    edit_pr_body(&context.repo_root, &updated_body)?;
+    edit_pr_body(context, pull_request.number, &updated_body)?;
     Ok(SyncStatus::Updated {
         number: pull_request.number,
     })
@@ -69,17 +69,24 @@ fn view_current_pr(repo_root: &Path) -> AppResult<Option<PullRequest>> {
     Err(AppError::new(format!("gh pr view failed: {stderr}")).into())
 }
 
-fn edit_pr_body(repo_root: &Path, body: &str) -> AppResult<()> {
-    let body_file = temp_body_path();
-    fs::write(&body_file, body)?;
+fn edit_pr_body(context: &GitContext, number: u64, body: &str) -> AppResult<()> {
+    let repo_slug = context
+        .repo_slug
+        .as_deref()
+        .ok_or_else(|| AppError::new("cannot sync PR body without a GitHub origin remote"))?;
+    let request_file = temp_request_path();
+    let request = serde_json::json!({ "body": body });
+    fs::write(&request_file, serde_json::to_vec(&request)?)?;
 
     let output = Command::new("gh")
-        .current_dir(repo_root)
-        .args(["pr", "edit", "--body-file"])
-        .arg(&body_file)
+        .current_dir(&context.repo_root)
+        .args(["api", "--method", "PATCH"])
+        .arg(format!("repos/{repo_slug}/pulls/{number}"))
+        .args(["--input"])
+        .arg(&request_file)
         .output();
 
-    let remove_result = fs::remove_file(&body_file);
+    let remove_result = fs::remove_file(&request_file);
     let output = output?;
     if let Err(error) = remove_result {
         return Err(error.into());
@@ -90,16 +97,16 @@ fn edit_pr_body(repo_root: &Path, body: &str) -> AppResult<()> {
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    Err(AppError::new(format!("gh pr edit failed: {stderr}")).into())
+    Err(AppError::new(format!("gh api PR update failed: {stderr}")).into())
 }
 
-fn temp_body_path() -> std::path::PathBuf {
+fn temp_request_path() -> std::path::PathBuf {
     let mut path = std::env::temp_dir();
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
     path.push(format!(
-        "plan-to-git-pr-body-{}-{timestamp}.md",
+        "plan-to-git-pr-body-{}-{timestamp}.json",
         std::process::id()
     ));
     path
