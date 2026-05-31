@@ -50,6 +50,7 @@ doc/
 .env
 .env.local
 *.local
+.agent-plan.json
 
 # Log files
 *.log
