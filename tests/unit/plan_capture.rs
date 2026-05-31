@@ -265,7 +265,7 @@ fn state_tracks_commented_items_per_pr() {
     state.mark_items_commented(17, &item_ids, Some(12345));
 
     assert!(state.unposted_items_for_pr(17).is_empty());
-    assert_eq!(state.unposted_items_for_pr(18).len(), 1);
+    assert!(state.unposted_items_for_pr(18).is_empty());
     assert_eq!(state.posted_comments[0].comment_id, Some(12345));
 }
 

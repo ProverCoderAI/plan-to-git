@@ -180,11 +180,11 @@ impl AgentPlanState {
     }
 
     #[must_use]
-    pub fn unposted_items_for_pr(&self, pr_number: u64) -> Vec<&PlanStackItem> {
+    pub fn unposted_items_for_pr(&self, _pr_number: u64) -> Vec<&PlanStackItem> {
         self.items
             .iter()
             .filter(|item| self.matches_current_branch(item))
-            .filter(|item| !self.is_posted_to_pr(pr_number, item))
+            .filter(|item| !self.is_posted(item))
             .collect()
     }
 
@@ -207,7 +207,7 @@ impl AgentPlanState {
             let Some(item) = self.items.iter().find(|item| &item.id == item_id) else {
                 continue;
             };
-            if self.is_posted_to_pr(pr_number, item) {
+            if self.is_posted(item) {
                 continue;
             }
             new_comments.push(PostedPlanComment {
@@ -228,11 +228,10 @@ impl AgentPlanState {
         }
     }
 
-    fn is_posted_to_pr(&self, pr_number: u64, item: &PlanStackItem) -> bool {
+    fn is_posted(&self, item: &PlanStackItem) -> bool {
         self.posted_comments.iter().any(|posted| {
-            posted.pr_number == pr_number
-                && posted.item_id == item.id
-                && posted.content_hash == item.content_hash
+            (posted.item_id.as_str(), posted.content_hash.as_str())
+                == (item.id.as_str(), item.content_hash.as_str())
         })
     }
 

@@ -52,10 +52,10 @@ When `gh pr view` finds a PR for the current branch, `plan-to-git` creates a new
 ...
 ```
 
-The PR description is not edited. After a comment is created, `.agent-plan.json` records the posted item hashes and GitHub comment id so repeated `sync`, `hook`, or `import-codex` runs do not post the same plan again.
+The PR description is not edited. After a comment is created, `.agent-plan.json` records the posted item hashes and GitHub comment id so repeated `sync`, `hook`, or `import-codex` runs do not post the same plan again, including on a later PR.
 
 ## Safety
 
 The hook path only uses stable hook payload fields and explicitly marked plan text. `import-codex` can backfill previous plans from `~/.codex/sessions`, but it only reads assistant message events from sessions that match the current repository and branch, and it still imports only explicit markers such as `<proposed_plan>...</proposed_plan>` or `## Accepted Plan`.
 
-Captured content is redacted before local storage and PR sync. `.agent-plan.json` also acts as the sent-plan registry: content hashes prevent the same plan from being added and commented again for the same branch.
+Captured content is redacted before local storage and PR sync. `.agent-plan.json` also acts as the sent-plan registry: content hashes prevent the same plan from being added and commented again.
