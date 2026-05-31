@@ -111,7 +111,10 @@ pub fn process_codex_hook(input: &str) -> AppResult<HookOutcome> {
         save_state(&state_path, &state)?;
     }
 
-    let sync_status = github::sync_state(&context, &state)?;
+    let sync_status = github::sync_state(&context, &mut state)?;
+    if changed || !state.items.is_empty() || !state.pending_questions.is_empty() {
+        save_state(&state_path, &state)?;
+    }
 
     Ok(HookOutcome {
         changed,

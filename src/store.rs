@@ -20,6 +20,8 @@ pub struct AgentPlanState {
     pub items: Vec<PlanStackItem>,
     #[serde(default)]
     pub pending_questions: Vec<PendingQuestion>,
+    #[serde(default)]
+    pub posted_comments: Vec<PostedPlanComment>,
 }
 
 impl Default for AgentPlanState {
@@ -31,6 +33,7 @@ impl Default for AgentPlanState {
             head_sha: None,
             items: Vec::new(),
             pending_questions: Vec::new(),
+            posted_comments: Vec::new(),
         }
     }
 }
@@ -78,6 +81,15 @@ pub struct PendingQuestion {
     pub session_id: Option<String>,
     pub turn_id: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PostedPlanComment {
+    pub pr_number: u64,
+    pub item_id: String,
+    pub content_hash: String,
+    pub comment_id: Option<u64>,
+    pub posted_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +177,63 @@ impl AgentPlanState {
         });
 
         true
+    }
+
+    #[must_use]
+    pub fn unposted_items_for_pr(&self, pr_number: u64) -> Vec<&PlanStackItem> {
+        self.items
+            .iter()
+            .filter(|item| self.matches_current_branch(item))
+            .filter(|item| !self.is_posted_to_pr(pr_number, item))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn has_current_branch_items(&self) -> bool {
+        self.items
+            .iter()
+            .any(|item| self.matches_current_branch(item))
+    }
+
+    pub fn mark_items_commented(
+        &mut self,
+        pr_number: u64,
+        item_ids: &[String],
+        comment_id: Option<u64>,
+    ) {
+        let posted_at = timestamp();
+        let mut new_comments = Vec::new();
+        for item_id in item_ids {
+            let Some(item) = self.items.iter().find(|item| &item.id == item_id) else {
+                continue;
+            };
+            if self.is_posted_to_pr(pr_number, item) {
+                continue;
+            }
+            new_comments.push(PostedPlanComment {
+                pr_number,
+                item_id: item.id.clone(),
+                content_hash: item.content_hash.clone(),
+                comment_id,
+                posted_at: posted_at.clone(),
+            });
+        }
+        self.posted_comments.extend(new_comments);
+    }
+
+    fn matches_current_branch(&self, item: &PlanStackItem) -> bool {
+        match (item.branch.as_deref(), self.branch.as_deref()) {
+            (Some(item_branch), Some(branch)) => item_branch == branch,
+            (Some(_), None) | (None, _) => true,
+        }
+    }
+
+    fn is_posted_to_pr(&self, pr_number: u64, item: &PlanStackItem) -> bool {
+        self.posted_comments.iter().any(|posted| {
+            posted.pr_number == pr_number
+                && posted.item_id == item.id
+                && posted.content_hash == item.content_hash
+        })
     }
 
     pub fn add_pending_question(&mut self, new_question: NewPendingQuestion) -> bool {

@@ -7,18 +7,7 @@ pub fn render_plan_block(state: &AgentPlanState) -> String {
     output.push_str(START_MARKER);
     output.push('\n');
     output.push_str("## Agent Plan Stack\n\n");
-
-    if let Some(branch) = &state.branch {
-        output.push_str("_Branch: `");
-        output.push_str(branch);
-        output.push('`');
-        if let Some(head_sha) = &state.head_sha {
-            output.push_str(" at `");
-            output.push_str(short_sha(head_sha));
-            output.push('`');
-        }
-        output.push_str("._\n\n");
-    }
+    push_context_line(&mut output, state);
 
     let items = current_branch_items(state);
 
@@ -46,6 +35,14 @@ pub fn render_plan_block(state: &AgentPlanState) -> String {
 }
 
 #[must_use]
+pub fn render_plan_comment(state: &AgentPlanState, items: &[&PlanStackItem]) -> String {
+    let mut output = String::from("## Agent Plan Update\n\n");
+    push_context_line(&mut output, state);
+    push_plan_items(&mut output, items);
+    output.trim_end().to_owned()
+}
+
+#[must_use]
 pub fn has_current_branch_items(state: &AgentPlanState) -> bool {
     state
         .items
@@ -59,6 +56,37 @@ fn current_branch_items(state: &AgentPlanState) -> Vec<&PlanStackItem> {
         .iter()
         .filter(|item| matches_current_branch(item, state.branch.as_deref()))
         .collect()
+}
+
+fn push_context_line(output: &mut String, state: &AgentPlanState) {
+    if let Some(branch) = &state.branch {
+        output.push_str("_Branch: `");
+        output.push_str(branch);
+        output.push('`');
+        if let Some(head_sha) = &state.head_sha {
+            output.push_str(" at `");
+            output.push_str(short_sha(head_sha));
+            output.push('`');
+        }
+        output.push_str("._\n\n");
+    }
+}
+
+fn push_plan_items(output: &mut String, items: &[&PlanStackItem]) {
+    for (index, item) in items.iter().enumerate() {
+        output.push_str("### ");
+        output.push_str(&(index + 1).to_string());
+        output.push_str(". ");
+        output.push_str(item_title(item.kind));
+        output.push('\n');
+        output.push_str("Source: ");
+        output.push_str(source_label(item.source));
+        output.push_str(" - Captured: ");
+        output.push_str(&item.created_at);
+        output.push_str("\n\n");
+        output.push_str(&escape_plan_markers(item.content.trim()));
+        output.push_str("\n\n");
+    }
 }
 
 fn matches_current_branch(item: &PlanStackItem, current_branch: Option<&str>) -> bool {

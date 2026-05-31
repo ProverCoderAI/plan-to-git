@@ -102,7 +102,7 @@ mod unix {
     }
 
     #[test]
-    fn hook_updates_open_pr_body_through_gh_api() {
+    fn hook_posts_open_pr_comment_through_gh_api() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let bin_dir = temp_dir.path().join("bin");
         let repo_dir = temp_dir.path().join("repo");
@@ -121,16 +121,20 @@ mod unix {
                     "cwd":"{}",
                     "hook_event_name":"Stop",
                     "turn_id":"turn",
-                    "last_assistant_message":"<proposed_plan>\n# MVP\n\n- Update PR body\n</proposed_plan>"
+                    "last_assistant_message":"<proposed_plan>\n# MVP\n\n- Post PR comment\n</proposed_plan>"
                 }}"#,
                 repo_dir.display()
             ),
         );
 
         let request = fs::read_to_string(captured_request).expect("captured request");
-        assert!(request.contains("Original PR body"));
-        assert!(request.contains("plan-to-git:start"));
-        assert!(request.contains("Update PR body"));
+        assert!(request.contains("Agent Plan Update"));
+        assert!(request.contains("Post PR comment"));
+        assert!(!request.contains("Original PR body"));
+
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
+        assert!(state.contains("\"posted_comments\""));
+        assert!(state.contains("\"comment_id\": 12345"));
     }
 
     #[test]
@@ -239,7 +243,7 @@ esac
     fn write_fake_gh_no_pr(bin_dir: &Path) {
         let script = r#"#!/usr/bin/env bash
 set -euo pipefail
-if [[ "$*" == "pr view --json number,body" ]]; then
+if [[ "$*" == "pr view --json number" ]]; then
   echo 'no pull requests found for branch "feature/test"' >&2
   exit 1
 fi
@@ -253,12 +257,13 @@ exit 1
         let script = format!(
             r#"#!/usr/bin/env bash
 set -euo pipefail
-if [[ "$*" == "pr view --json number,body" ]]; then
-  printf '%s\n' '{{"number":17,"body":"Original PR body"}}'
+if [[ "$*" == "pr view --json number" ]]; then
+  printf '%s\n' '{{"number":17}}'
   exit 0
 fi
-if [[ "$1 $2 $3" == "api --method PATCH" && "$4" == "repos/example/repo/pulls/17" && "$5" == "--input" ]]; then
+if [[ "$1 $2 $3" == "api --method POST" && "$4" == "repos/example/repo/issues/17/comments" && "$5" == "--input" ]]; then
   cp "$6" "{}"
+  printf '%s\n' '{{"id":12345}}'
   exit 0
 fi
 echo "unexpected gh args: $*" >&2

@@ -1,13 +1,13 @@
 # plan-to-git
 
-`plan-to-git` captures explicit plans produced by coding agents and keeps the current pull request description in sync.
+`plan-to-git` captures explicit plans produced by coding agents and posts new pull request comments for plan updates.
 
 The MVP is Codex-first:
 
 - reads Codex hook JSON from stdin;
 - captures only explicit plan blocks such as `<proposed_plan>...</proposed_plan>` or `## Accepted Plan`;
 - stores captured plans and planning Q/A decisions in `.agent-plan.json`;
-- updates the current branch PR body between stable markers when a PR exists;
+- posts a new PR comment with newly captured current-branch items when a PR exists;
 - leaves the local stack queued when no PR exists yet.
 
 ## CLI
@@ -42,22 +42,20 @@ command = "plan-to-git hook --source codex"
 
 Exact hook configuration shape can vary by Codex release. The hook command itself expects the release behavior documented by Codex hooks: `Stop` includes `last_assistant_message`, and `UserPromptSubmit` includes `prompt`.
 
-## Pull Request Block
+## Pull Request Comments
 
-When `gh pr view` finds a PR for the current branch, `plan-to-git` inserts or replaces only this section:
+When `gh pr view` finds a PR for the current branch, `plan-to-git` creates a new issue comment on that PR containing items that have not been posted before:
 
 ```markdown
-<!-- plan-to-git:start -->
-## Agent Plan Stack
+## Agent Plan Update
 
 ...
-<!-- plan-to-git:end -->
 ```
 
-If only one marker exists, sync fails rather than risking corruption of the human-written PR body.
+The PR description is not edited. After a comment is created, `.agent-plan.json` records the posted item hashes and GitHub comment id so repeated `sync`, `hook`, or `import-codex` runs do not post the same plan again.
 
 ## Safety
 
 The hook path only uses stable hook payload fields and explicitly marked plan text. `import-codex` can backfill previous plans from `~/.codex/sessions`, but it only reads assistant message events from sessions that match the current repository and branch, and it still imports only explicit markers such as `<proposed_plan>...</proposed_plan>` or `## Accepted Plan`.
 
-Captured content is redacted before local storage and PR sync. `.agent-plan.json` also acts as the sent-plan registry: content hashes prevent the same plan from being added and uploaded again for the same branch.
+Captured content is redacted before local storage and PR sync. `.agent-plan.json` also acts as the sent-plan registry: content hashes prevent the same plan from being added and commented again for the same branch.

@@ -1,7 +1,7 @@
 use plan_to_git::normalize::{extract_marked_plans, extract_questions};
 use plan_to_git::pr_body::{upsert_marker_block, END_MARKER, START_MARKER};
 use plan_to_git::redact::redact;
-use plan_to_git::render::{has_current_branch_items, render_plan_block};
+use plan_to_git::render::{has_current_branch_items, render_plan_block, render_plan_comment};
 use plan_to_git::store::{
     AgentPlanState, AgentSource, NewDecision, NewPendingQuestion, NewPlanItem,
 };
@@ -236,6 +236,37 @@ fn render_escapes_nested_plan_markers() {
     assert_eq!(rendered.matches(START_MARKER).count(), 1);
     assert_eq!(rendered.matches(END_MARKER).count(), 1);
     assert!(rendered.contains("&lt;!-- plan-to-git:start --&gt;"));
+}
+
+#[test]
+fn state_tracks_commented_items_per_pr() {
+    let mut state = AgentPlanState::default();
+    state.set_context(None, Some("feature/current".to_owned()), None);
+    assert!(state.add_plan(NewPlanItem {
+        source: AgentSource::Codex,
+        title: Some("Commented".to_owned()),
+        content: "- Post once".to_owned(),
+        branch: Some("feature/current".to_owned()),
+        head_sha: None,
+        session_id: None,
+        turn_id: None,
+        created_at: None,
+    }));
+
+    let item_ids = state
+        .unposted_items_for_pr(17)
+        .iter()
+        .map(|item| item.id.clone())
+        .collect::<Vec<_>>();
+    let comment = render_plan_comment(&state, &state.unposted_items_for_pr(17));
+
+    assert!(comment.contains("Agent Plan Update"));
+    assert!(comment.contains("Post once"));
+    state.mark_items_commented(17, &item_ids, Some(12345));
+
+    assert!(state.unposted_items_for_pr(17).is_empty());
+    assert_eq!(state.unposted_items_for_pr(18).len(), 1);
+    assert_eq!(state.posted_comments[0].comment_id, Some(12345));
 }
 
 #[test]

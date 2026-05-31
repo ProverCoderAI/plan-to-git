@@ -8,7 +8,7 @@ use plan_to_git::codex_history::{self, CodexHistoryImportOutcome};
 use plan_to_git::error::{AppError, AppResult};
 use plan_to_git::git;
 use plan_to_git::github::{self, SyncStatus};
-use plan_to_git::render::render_plan_block;
+use plan_to_git::render::render_plan_comment;
 use plan_to_git::store::{load_state, save_state, STATE_FILE_NAME};
 
 #[derive(Parser, Debug)]
@@ -37,15 +37,15 @@ enum Commands {
         /// Scan and report what would be imported without writing or syncing.
         #[arg(long)]
         dry_run: bool,
-        /// Save imported plans locally without syncing the pull request body.
+        /// Save imported plans locally without posting a pull request comment.
         #[arg(long)]
         no_sync: bool,
     },
-    /// Sync the local plan stack into the current branch pull request.
+    /// Post newly captured plan items to the current branch pull request.
     Sync,
     /// Print the local plan stack JSON.
     Show,
-    /// Render the pull request markdown block.
+    /// Render the local plan stack markdown.
     Render,
     /// Clear local plan stack state.
     Clear {
@@ -109,7 +109,9 @@ fn run(command: &Commands) -> AppResult<()> {
                 return Ok(());
             }
 
-            print_sync_status(&github::sync_state(&context, &state)?);
+            let sync_status = github::sync_state(&context, &mut state)?;
+            save_state(&state_path, &state)?;
+            print_sync_status(&sync_status);
             Ok(())
         }
         Commands::Sync => {
@@ -120,8 +122,9 @@ fn run(command: &Commands) -> AppResult<()> {
                 context.branch.clone(),
                 context.head_sha.clone(),
             );
+            let sync_status = github::sync_state(&context, &mut state)?;
             save_state(&state_path, &state)?;
-            print_sync_status(&github::sync_state(&context, &state)?);
+            print_sync_status(&sync_status);
             Ok(())
         }
         Commands::Show => {
@@ -133,7 +136,10 @@ fn run(command: &Commands) -> AppResult<()> {
         Commands::Render => {
             let (_, state_path) = state_context()?;
             let state = load_state(&state_path)?;
-            println!("{}", render_plan_block(&state));
+            println!(
+                "{}",
+                render_plan_comment(&state, &state.unposted_items_for_pr(0))
+            );
             Ok(())
         }
         Commands::Clear { yes } => {
@@ -181,8 +187,16 @@ fn print_sync_status(status: &SyncStatus) {
     match status {
         SyncStatus::NoItems => println!("no captured plan items to sync"),
         SyncStatus::NoPullRequest => println!("no pull request found for the current branch"),
-        SyncStatus::Unchanged { number } => println!("pull request #{number} already up to date"),
-        SyncStatus::Updated { number } => println!("updated pull request #{number}"),
+        SyncStatus::Unchanged { number } => {
+            println!("no new plan items to comment on pull request #{number}");
+        }
+        SyncStatus::Commented {
+            number,
+            comment_id,
+            items,
+        } => {
+            println!("posted {items} plan item(s) to pull request #{number} comment #{comment_id}");
+        }
     }
 }
 
