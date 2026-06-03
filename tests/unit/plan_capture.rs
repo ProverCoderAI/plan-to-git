@@ -27,6 +27,239 @@ after
 }
 
 #[test]
+fn extracts_tagged_plan_with_title_attribute() {
+    let message = r#"
+<proposed_plan title="Attribute Plan">
+- Capture attribute title.
+</proposed_plan>
+"#;
+
+    let plans = extract_marked_plans(message);
+
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].title.as_deref(), Some("Attribute Plan"));
+    assert!(plans[0].content.starts_with("# Attribute Plan"));
+    assert!(plans[0].content.contains("- Capture attribute title."));
+}
+
+#[test]
+fn normalizes_xml_plan_sections_to_markdown() {
+    let message = r#"
+<proposed_plan title="Production Hook Verification Plan">
+  <summary>
+    Verify end-to-end capture.
+  </summary>
+
+  <flow>
+    1. Inspect hooks.
+    2. Confirm GitHub comment.
+  </flow>
+
+  <test_plan>
+    1. Run import.
+    2. Check sync.
+  </test_plan>
+
+  <assumptions>
+    1. gh is authenticated.
+  </assumptions>
+</proposed_plan>
+"#;
+
+    let plans = extract_marked_plans(message);
+
+    assert_eq!(plans.len(), 1);
+    assert_eq!(
+        plans[0].content,
+        r"# Production Hook Verification Plan
+
+## Summary
+
+Verify end-to-end capture.
+
+## Flow
+
+1. Inspect hooks.
+2. Confirm GitHub comment.
+
+## Test Plan
+
+1. Run import.
+2. Check sync.
+
+## Assumptions
+
+1. gh is authenticated."
+    );
+}
+
+#[test]
+fn leaves_unknown_xml_plan_content_unchanged() {
+    let message = r#"
+<proposed_plan title="Unknown Tags">
+<risk>
+  Keep unknown tags literal.
+</risk>
+</proposed_plan>
+"#;
+
+    let plans = extract_marked_plans(message);
+
+    assert_eq!(plans.len(), 1);
+    assert!(plans[0].content.contains("<risk>"));
+    assert!(plans[0].content.contains("</risk>"));
+}
+
+#[test]
+fn leaves_xml_section_examples_in_code_fences_unchanged() {
+    let message = r#"
+<proposed_plan title="Code Fence">
+```xml
+<summary>
+  Keep this example literal.
+</summary>
+```
+</proposed_plan>
+"#;
+
+    let plans = extract_marked_plans(message);
+
+    assert_eq!(plans.len(), 1);
+    assert!(plans[0].content.contains("```xml\n<summary>"));
+    assert!(plans[0].content.contains("</summary>\n```"));
+    assert!(!plans[0].content.contains("## Summary"));
+}
+
+#[test]
+fn leaves_details_summary_html_unchanged() {
+    let message = r#"
+<proposed_plan title="Details">
+<details>
+<summary>
+Click to expand.
+</summary>
+
+Body.
+</details>
+</proposed_plan>
+"#;
+
+    let plans = extract_marked_plans(message);
+
+    assert_eq!(plans.len(), 1);
+    assert!(plans[0].content.contains("<details>"));
+    assert!(plans[0].content.contains("<summary>"));
+    assert!(plans[0].content.contains("</summary>"));
+    assert!(!plans[0].content.contains("## Summary"));
+}
+
+#[test]
+fn extracts_tagged_plan_with_multiple_attributes() {
+    let message = r#"
+<proposed_plan data-title="Wrong" title='Right Plan' source="codex">
+- Keep the exact title attribute.
+</proposed_plan>
+"#;
+
+    let plans = extract_marked_plans(message);
+
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].title.as_deref(), Some("Right Plan"));
+    assert!(plans[0].content.starts_with("# Right Plan"));
+    assert!(plans[0]
+        .content
+        .contains("- Keep the exact title attribute."));
+}
+
+#[test]
+fn extracts_multiple_attributed_plans() {
+    let message = r#"
+<proposed_plan title="First Plan">
+- First body.
+</proposed_plan>
+<proposed_plan title="Second Plan">
+- Second body.
+</proposed_plan>
+"#;
+
+    let plans = extract_marked_plans(message);
+
+    assert_eq!(plans.len(), 2);
+    assert_eq!(plans[0].title.as_deref(), Some("First Plan"));
+    assert_eq!(plans[1].title.as_deref(), Some("Second Plan"));
+    assert!(plans[0].content.contains("- First body."));
+    assert!(plans[1].content.contains("- Second body."));
+}
+
+#[test]
+fn does_not_confuse_data_title_with_title() {
+    let message = r#"
+<proposed_plan data-title="Wrong">
+- No visible attribute title.
+</proposed_plan>
+"#;
+
+    let plans = extract_marked_plans(message);
+
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].title, None);
+    assert!(!plans[0].content.contains("Wrong"));
+    assert!(plans[0]
+        .content
+        .starts_with("- No visible attribute title."));
+}
+
+#[test]
+fn ignores_blank_title_attribute() {
+    let message = r#"
+<proposed_plan title="   ">
+- No empty heading.
+</proposed_plan>
+"#;
+
+    let plans = extract_marked_plans(message);
+
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].title, None);
+    assert!(!plans[0].content.starts_with("# "));
+    assert!(plans[0].content.starts_with("- No empty heading."));
+}
+
+#[test]
+fn content_heading_takes_precedence_over_title_attribute() {
+    let message = r#"
+<proposed_plan title="Attribute Plan">
+# Content Plan
+
+- Keep content heading.
+</proposed_plan>
+"#;
+
+    let plans = extract_marked_plans(message);
+
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].title.as_deref(), Some("Content Plan"));
+    assert!(plans[0].content.starts_with("# Content Plan"));
+    assert!(!plans[0].content.contains("# Attribute Plan"));
+}
+
+#[test]
+fn rejects_proposed_plan_prefix_tags() {
+    let message = r#"
+<proposed_plan_extra title="Bad">
+- Do not capture.
+</proposed_plan>
+<proposed_planx>
+- Do not capture either.
+</proposed_plan>
+"#;
+
+    let plans = extract_marked_plans(message);
+
+    assert!(plans.is_empty());
+}
+
+#[test]
 fn tagged_plan_ignores_inline_tag_examples() {
     let message = r"
 <proposed_plan>

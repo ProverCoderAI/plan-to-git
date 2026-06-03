@@ -14,6 +14,10 @@ use crate::store::AgentPlanState;
 pub enum SyncStatus {
     NoItems,
     NoPullRequest,
+    ClosedPullRequest {
+        number: u64,
+        state: String,
+    },
     Unchanged {
         number: u64,
     },
@@ -27,6 +31,7 @@ pub enum SyncStatus {
 #[derive(Debug, Deserialize)]
 struct PullRequest {
     number: u64,
+    state: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +47,12 @@ pub fn sync_state(context: &GitContext, state: &mut AgentPlanState) -> AppResult
     let Some(pull_request) = view_current_pr(&context.repo_root)? else {
         return Ok(SyncStatus::NoPullRequest);
     };
+    if !pull_request.state.eq_ignore_ascii_case("OPEN") {
+        return Ok(SyncStatus::ClosedPullRequest {
+            number: pull_request.number,
+            state: pull_request.state,
+        });
+    }
 
     let (comment_body, item_ids, item_count) = {
         let items = state.unposted_items_for_pr(pull_request.number);
@@ -67,7 +78,7 @@ pub fn sync_state(context: &GitContext, state: &mut AgentPlanState) -> AppResult
 fn view_current_pr(repo_root: &Path) -> AppResult<Option<PullRequest>> {
     let output = Command::new("gh")
         .current_dir(repo_root)
-        .args(["pr", "view", "--json", "number"])
+        .args(["pr", "view", "--json", "number,state,url"])
         .output()?;
 
     if output.status.success() {

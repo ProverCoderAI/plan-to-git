@@ -56,6 +56,101 @@ mod unix {
     }
 
     #[test]
+    fn hook_accepts_current_codex_last_agent_message() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_no_pr(&bin_dir);
+
+        run_hook(
+            &repo_dir,
+            &bin_dir,
+            &format!(
+                r#"{{
+                    "session_id":"session",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop",
+                    "turn_id":"turn",
+                    "last_agent_message":"<proposed_plan>\n# Current Codex\n\n- Capture current payload\n</proposed_plan>"
+                }}"#,
+                repo_dir.display()
+            ),
+        );
+
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
+        assert!(state.contains("Capture current payload"));
+    }
+
+    #[test]
+    fn hook_accepts_proposed_plan_title_attribute() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_no_pr(&bin_dir);
+
+        run_hook(
+            &repo_dir,
+            &bin_dir,
+            &format!(
+                r#"{{
+                    "session_id":"session",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop",
+                    "turn_id":"turn",
+                    "last_agent_message":"<proposed_plan title=\"Attribute Hook Plan\">\n- Capture title attribute\n</proposed_plan>"
+                }}"#,
+                repo_dir.display()
+            ),
+        );
+
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
+        assert!(state.contains("Attribute Hook Plan"));
+        assert!(state.contains("# Attribute Hook Plan"));
+        assert!(state.contains("Capture title attribute"));
+    }
+
+    #[test]
+    fn hook_normalizes_xml_plan_sections() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_no_pr(&bin_dir);
+
+        run_hook(
+            &repo_dir,
+            &bin_dir,
+            &format!(
+                r#"{{
+                    "session_id":"session",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop",
+                    "turn_id":"turn",
+                    "last_agent_message":"<proposed_plan title=\"XML Plan\">\n  <summary>\n    Verify production capture.\n  </summary>\n\n  <test_plan>\n    1. Check GitHub comment.\n  </test_plan>\n</proposed_plan>"
+                }}"#,
+                repo_dir.display()
+            ),
+        );
+
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
+        assert!(state.contains("# XML Plan"));
+        assert!(state.contains("## Summary"));
+        assert!(state.contains("Verify production capture."));
+        assert!(state.contains("## Test Plan"));
+        assert!(state.contains("1. Check GitHub comment."));
+        assert!(!state.contains("<summary>"));
+        assert!(!state.contains("<test_plan>"));
+    }
+
+    #[test]
     fn hook_records_question_answer_decision() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let bin_dir = temp_dir.path().join("bin");
@@ -135,6 +230,109 @@ mod unix {
         let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
         assert!(state.contains("\"posted_comments\""));
         assert!(state.contains("\"comment_id\": 12345"));
+    }
+
+    #[test]
+    fn hook_leaves_plans_queued_when_pr_is_merged() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        let captured_request = temp_dir.path().join("request.json");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_closed_pr(&bin_dir, "MERGED", &captured_request);
+
+        run_hook(
+            &repo_dir,
+            &bin_dir,
+            &format!(
+                r#"{{
+                    "session_id":"session",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop",
+                    "turn_id":"turn",
+                    "last_assistant_message":"<proposed_plan>\n# Queued\n\n- Wait for an open PR\n</proposed_plan>"
+                }}"#,
+                repo_dir.display()
+            ),
+        );
+
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
+        assert!(state.contains("Wait for an open PR"));
+        assert!(state.contains("\"posted_comments\": []"));
+        assert!(!captured_request.exists());
+    }
+
+    #[test]
+    fn hook_leaves_plans_queued_when_pr_is_closed() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        let captured_request = temp_dir.path().join("request.json");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_closed_pr(&bin_dir, "CLOSED", &captured_request);
+
+        run_hook(
+            &repo_dir,
+            &bin_dir,
+            &format!(
+                r#"{{
+                    "session_id":"session",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop",
+                    "turn_id":"turn",
+                    "last_assistant_message":"<proposed_plan>\n# Queued\n\n- Wait for an open PR\n</proposed_plan>"
+                }}"#,
+                repo_dir.display()
+            ),
+        );
+
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
+        assert!(state.contains("Wait for an open PR"));
+        assert!(state.contains("\"posted_comments\": []"));
+        assert!(!captured_request.exists());
+    }
+
+    #[test]
+    fn sync_reports_merged_pr_and_does_not_comment() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        let captured_request = temp_dir.path().join("request.json");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_closed_pr(&bin_dir, "MERGED", &captured_request);
+
+        run_hook(
+            &repo_dir,
+            &bin_dir,
+            &format!(
+                r#"{{
+                    "session_id":"session",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop",
+                    "turn_id":"turn",
+                    "last_assistant_message":"<proposed_plan>\n# Queued\n\n- Wait for an open PR\n</proposed_plan>"
+                }}"#,
+                repo_dir.display()
+            ),
+        );
+
+        let output = Command::new(env!("CARGO_BIN_EXE_plan-to-git"))
+            .arg("sync")
+            .current_dir(&repo_dir)
+            .env("PATH", path_with_fake_bin(&bin_dir))
+            .output()
+            .expect("run sync");
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).expect("stdout");
+        assert!(stdout.contains("pull request #17 is MERGED; leaving plan items queued"));
+        assert!(!captured_request.exists());
     }
 
     #[test]
@@ -243,7 +441,7 @@ esac
     fn write_fake_gh_no_pr(bin_dir: &Path) {
         let script = r#"#!/usr/bin/env bash
 set -euo pipefail
-if [[ "$*" == "pr view --json number" ]]; then
+if [[ "$*" == "pr view --json number,state,url" ]]; then
   echo 'no pull requests found for branch "feature/test"' >&2
   exit 1
 fi
@@ -257,14 +455,35 @@ exit 1
         let script = format!(
             r#"#!/usr/bin/env bash
 set -euo pipefail
-if [[ "$*" == "pr view --json number" ]]; then
-  printf '%s\n' '{{"number":17}}'
+if [[ "$*" == "pr view --json number,state,url" ]]; then
+  printf '%s\n' '{{"number":17,"state":"OPEN","url":"https://github.com/example/repo/pull/17"}}'
   exit 0
 fi
 if [[ "$1 $2 $3" == "api --method POST" && "$4" == "repos/example/repo/issues/17/comments" && "$5" == "--input" ]]; then
   cp "$6" "{}"
   printf '%s\n' '{{"id":12345}}'
   exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+"#,
+            captured_request.display()
+        );
+        write_executable(&bin_dir.join("gh"), &script);
+    }
+
+    fn write_fake_gh_closed_pr(bin_dir: &Path, state: &str, captured_request: &Path) {
+        let script = format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "pr view --json number,state,url" ]]; then
+  printf '%s\n' '{{"number":17,"state":"{state}","url":"https://github.com/example/repo/pull/17"}}'
+  exit 0
+fi
+if [[ "$1" == "api" ]]; then
+  printf '%s\n' "$*" > "{}"
+  echo "comment API should not be called for closed PR" >&2
+  exit 1
 fi
 echo "unexpected gh args: $*" >&2
 exit 1
