@@ -187,6 +187,9 @@ fn print_sync_status(status: &SyncStatus) {
     match status {
         SyncStatus::NoItems => println!("no captured plan items to sync"),
         SyncStatus::NoPullRequest => println!("no pull request found for the current branch"),
+        SyncStatus::ClosedPullRequest { number, state } => {
+            println!("pull request #{number} is {state}; leaving plan items queued");
+        }
         SyncStatus::Unchanged { number } => {
             println!("no new plan items to comment on pull request #{number}");
         }

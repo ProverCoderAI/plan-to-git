@@ -30,7 +30,7 @@ struct CodexHookInput {
     turn_id: Option<String>,
     #[serde(default)]
     prompt: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "last_agent_message")]
     last_assistant_message: Option<String>,
 }
 
