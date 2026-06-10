@@ -7,8 +7,8 @@ The MVP is Codex-first:
 - reads Codex hook JSON from stdin;
 - captures only explicit plan blocks such as `<proposed_plan>...</proposed_plan>`, `<proposed_plan title="...">...</proposed_plan>`, or `## Accepted Plan`;
 - stores captured plans and planning Q/A decisions in `.agent-plan.json`;
-- posts a new PR comment with newly captured current-branch items when an open PR exists;
-- leaves the local stack queued when no open PR exists yet.
+- posts a new PR comment with newly captured current-branch items when a valid (open, non-draft) PR exists;
+- leaves the local stack queued when no valid PR exists yet.
 
 ## CLI
 
@@ -46,7 +46,7 @@ If an agent emits known XML-style plan sections (`summary`, `flow`, `test_plan`,
 
 ## Pull Request Comments
 
-When `gh pr view` finds an open PR for the current branch, `plan-to-git` creates a new issue comment on that PR containing items that have not been posted before:
+When `gh pr view` finds an open, non-draft PR for the current branch, `plan-to-git` creates a new issue comment on that PR containing items that have not been posted before:
 
 ```markdown
 ## Agent Plan Update
@@ -54,7 +54,7 @@ When `gh pr view` finds an open PR for the current branch, `plan-to-git` creates
 ...
 ```
 
-The PR description is not edited. Closed or merged pull requests are not commented on; new items stay queued until an open PR exists. After a comment is created, `.agent-plan.json` records the posted item hashes and GitHub comment id so repeated `sync`, `hook`, or `import-codex` runs do not post the same plan again, including on a later PR.
+The PR description is not edited. Closed, merged, or still-draft pull requests are not commented on; new items stay queued until the PR is valid (open and marked ready for review). After a comment is created, `.agent-plan.json` records the posted item hashes and GitHub comment id so repeated `sync`, `hook`, or `import-codex` runs do not post the same plan again, including on a later PR.
 
 ## Safety
 

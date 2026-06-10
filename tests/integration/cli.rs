@@ -297,6 +297,77 @@ mod unix {
     }
 
     #[test]
+    fn hook_leaves_plans_queued_when_pr_is_draft() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        let captured_request = temp_dir.path().join("request.json");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_draft_pr(&bin_dir, &captured_request);
+
+        run_hook(
+            &repo_dir,
+            &bin_dir,
+            &format!(
+                r#"{{
+                    "session_id":"session",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop",
+                    "turn_id":"turn",
+                    "last_assistant_message":"<proposed_plan>\n# Queued\n\n- Wait for a valid PR\n</proposed_plan>"
+                }}"#,
+                repo_dir.display()
+            ),
+        );
+
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
+        assert!(state.contains("Wait for a valid PR"));
+        assert!(state.contains("\"posted_comments\": []"));
+        assert!(!captured_request.exists());
+    }
+
+    #[test]
+    fn sync_reports_draft_pr_and_does_not_comment() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        let captured_request = temp_dir.path().join("request.json");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_draft_pr(&bin_dir, &captured_request);
+
+        run_hook(
+            &repo_dir,
+            &bin_dir,
+            &format!(
+                r#"{{
+                    "session_id":"session",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop",
+                    "turn_id":"turn",
+                    "last_assistant_message":"<proposed_plan>\n# Queued\n\n- Wait for a valid PR\n</proposed_plan>"
+                }}"#,
+                repo_dir.display()
+            ),
+        );
+
+        let output = Command::new(env!("CARGO_BIN_EXE_plan-to-git"))
+            .arg("sync")
+            .current_dir(&repo_dir)
+            .env("PATH", path_with_fake_bin(&bin_dir))
+            .output()
+            .expect("run sync");
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).expect("stdout");
+        assert!(stdout.contains("pull request #17 is a draft; leaving plan items queued"));
+        assert!(!captured_request.exists());
+    }
+
+    #[test]
     fn sync_reports_merged_pr_and_does_not_comment() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let bin_dir = temp_dir.path().join("bin");
@@ -441,7 +512,7 @@ esac
     fn write_fake_gh_no_pr(bin_dir: &Path) {
         let script = r#"#!/usr/bin/env bash
 set -euo pipefail
-if [[ "$*" == "pr view --json number,state,url" ]]; then
+if [[ "$*" == "pr view --json number,state,url,isDraft" ]]; then
   echo 'no pull requests found for branch "feature/test"' >&2
   exit 1
 fi
@@ -455,7 +526,7 @@ exit 1
         let script = format!(
             r#"#!/usr/bin/env bash
 set -euo pipefail
-if [[ "$*" == "pr view --json number,state,url" ]]; then
+if [[ "$*" == "pr view --json number,state,url,isDraft" ]]; then
   printf '%s\n' '{{"number":17,"state":"OPEN","url":"https://github.com/example/repo/pull/17"}}'
   exit 0
 fi
@@ -476,13 +547,34 @@ exit 1
         let script = format!(
             r#"#!/usr/bin/env bash
 set -euo pipefail
-if [[ "$*" == "pr view --json number,state,url" ]]; then
+if [[ "$*" == "pr view --json number,state,url,isDraft" ]]; then
   printf '%s\n' '{{"number":17,"state":"{state}","url":"https://github.com/example/repo/pull/17"}}'
   exit 0
 fi
 if [[ "$1" == "api" ]]; then
   printf '%s\n' "$*" > "{}"
   echo "comment API should not be called for closed PR" >&2
+  exit 1
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+"#,
+            captured_request.display()
+        );
+        write_executable(&bin_dir.join("gh"), &script);
+    }
+
+    fn write_fake_gh_draft_pr(bin_dir: &Path, captured_request: &Path) {
+        let script = format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "pr view --json number,state,url,isDraft" ]]; then
+  printf '%s\n' '{{"number":17,"state":"OPEN","url":"https://github.com/example/repo/pull/17","isDraft":true}}'
+  exit 0
+fi
+if [[ "$1" == "api" ]]; then
+  printf '%s\n' "$*" > "{}"
+  echo "comment API should not be called for draft PR" >&2
   exit 1
 fi
 echo "unexpected gh args: $*" >&2
