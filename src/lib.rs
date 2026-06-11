@@ -1,10 +1,13 @@
 pub mod capture;
+pub mod claude_history;
 pub mod codex_history;
 pub mod error;
 pub mod git;
 pub mod github;
+pub mod history;
 pub mod normalize;
 pub mod pr_body;
 pub mod redact;
 pub mod render;
+pub mod state_path;
 pub mod store;

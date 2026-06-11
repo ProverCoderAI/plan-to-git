@@ -1,25 +1,16 @@
 use serde_json::Value;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use crate::error::AppResult;
 use crate::git::{parse_github_slug, GitContext};
+use crate::history::{
+    collect_jsonl_files, line_turn_id, looks_like_rendered_plan_stack, session_id_from_path,
+    HistoryImportOutcome,
+};
 use crate::normalize::extract_marked_plans;
-use crate::pr_body::{END_MARKER, START_MARKER};
 use crate::store::{AgentPlanState, AgentSource, NewPlanItem};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodexHistoryImportOutcome {
-    pub files_scanned: usize,
-    pub files_matched: usize,
-    pub lines_scanned: usize,
-    pub parse_errors: usize,
-    pub plans_found: usize,
-    pub plans_added: usize,
-    pub duplicates: usize,
-    pub rendered_stacks_skipped: usize,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionMetadata {
@@ -33,18 +24,8 @@ pub fn import_codex_history(
     codex_home: &Path,
     context: &GitContext,
     state: &mut AgentPlanState,
-) -> AppResult<CodexHistoryImportOutcome> {
-    let mut outcome = CodexHistoryImportOutcome {
-        files_scanned: 0,
-        files_matched: 0,
-        lines_scanned: 0,
-        parse_errors: 0,
-        plans_found: 0,
-        plans_added: 0,
-        duplicates: 0,
-        rendered_stacks_skipped: 0,
-    };
-
+) -> AppResult<HistoryImportOutcome> {
+    let mut outcome = HistoryImportOutcome::default();
     let mut files = codex_session_files(codex_home)?;
     files.sort();
 
@@ -60,7 +41,7 @@ fn import_session_file(
     path: &Path,
     context: &GitContext,
     state: &mut AgentPlanState,
-    outcome: &mut CodexHistoryImportOutcome,
+    outcome: &mut HistoryImportOutcome,
 ) -> AppResult<()> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
@@ -146,28 +127,6 @@ fn codex_session_files(codex_home: &Path) -> AppResult<Vec<PathBuf>> {
     let mut files = Vec::new();
     collect_jsonl_files(&sessions_dir, &mut files)?;
     Ok(files)
-}
-
-fn collect_jsonl_files(dir: &Path, files: &mut Vec<PathBuf>) -> AppResult<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_jsonl_files(&path, files)?;
-        } else if path
-            .extension()
-            .is_some_and(|extension| extension == "jsonl")
-        {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn looks_like_rendered_plan_stack(content: &str) -> bool {
-    content.contains("## Agent Plan Stack")
-        && content.contains(START_MARKER)
-        && content.contains(END_MARKER)
 }
 
 fn parse_session_metadata(event: &Value) -> SessionMetadata {
@@ -259,17 +218,6 @@ fn task_complete_message_text(event: &Value) -> Option<String> {
         .and_then(Value::as_str)?;
 
     (!text.trim().is_empty()).then_some(text.to_owned())
-}
-
-fn session_id_from_path(path: &Path) -> Option<String> {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .map(ToOwned::to_owned)
-}
-
-fn line_turn_id(path: &Path, line_number: usize) -> Option<String> {
-    let stem = path.file_stem()?.to_str()?;
-    Some(format!("{stem}:{line_number}"))
 }
 
 #[cfg(test)]

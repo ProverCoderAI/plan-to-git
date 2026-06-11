@@ -3,10 +3,11 @@ mod unix {
     use std::fs;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
 
     use plan_to_git::store::STATE_FILE_NAME;
+    use walkdir::WalkDir;
 
     #[test]
     fn hook_captures_plan_and_handles_missing_pr() {
@@ -35,6 +36,7 @@ mod unix {
             .arg("codex")
             .current_dir(&repo_dir)
             .env("PATH", path_with_fake_bin(&bin_dir))
+            .env("PLAN_TO_GIT_STATE_PATH", state_path(&repo_dir))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -53,6 +55,58 @@ mod unix {
 
         let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
         assert!(state.contains("Capture plan"));
+    }
+
+    #[test]
+    fn hook_writes_state_under_configured_tmp_state_dir() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        let state_dir = temp_dir.path().join("plan-to-git-state");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_no_pr(&bin_dir);
+
+        let payload = format!(
+            r#"{{
+                "session_id":"session",
+                "cwd":"{}",
+                "hook_event_name":"Stop",
+                "turn_id":"turn",
+                "last_assistant_message":"<proposed_plan>\n# Tmp State\n\n- Store outside repo\n</proposed_plan>"
+            }}"#,
+            repo_dir.display()
+        );
+
+        let mut child = Command::new(env!("CARGO_BIN_EXE_plan-to-git"))
+            .arg("hook")
+            .arg("--source")
+            .arg("codex")
+            .current_dir(&repo_dir)
+            .env("PATH", path_with_fake_bin(&bin_dir))
+            .env("PLAN_TO_GIT_STATE_DIR", &state_dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn plan-to-git");
+
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin")
+            .write_all(payload.as_bytes())
+            .expect("write payload");
+
+        let output = child.wait_with_output().expect("wait");
+        assert!(output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(!repo_dir.join(STATE_FILE_NAME).exists());
+
+        let state_files = find_state_files(&state_dir);
+        assert_eq!(state_files.len(), 1);
+        let state = fs::read_to_string(&state_files[0]).expect("state file");
+        assert!(state.contains("Store outside repo"));
     }
 
     #[test]
@@ -197,6 +251,178 @@ mod unix {
     }
 
     #[test]
+    fn hook_captures_claude_plan_source() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_no_pr(&bin_dir);
+
+        run_hook_source(
+            &repo_dir,
+            &bin_dir,
+            "claude",
+            &format!(
+                r#"{{
+                    "session_id":"session",
+                    "transcript_path":"{}",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop",
+                    "last_assistant_message":"<proposed_plan>\n# Claude Hook\n\n- Capture Claude plan\n</proposed_plan>"
+                }}"#,
+                repo_dir.join("transcript.jsonl").display(),
+                repo_dir.display()
+            ),
+        );
+
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
+        assert!(state.contains("\"source\": \"claude\""));
+        assert!(state.contains("Capture Claude plan"));
+    }
+
+    #[test]
+    fn hook_captures_claude_plan_from_transcript_path_fallback() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        let transcript_path = temp_dir.path().join("transcript.jsonl");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_no_pr(&bin_dir);
+
+        fs::write(
+            &transcript_path,
+            format!(
+                r#"{{"type":"user","sessionId":"session","cwd":"{}","message":{{"role":"user","content":"<proposed_plan>\n# User Plan\n\n- Do not capture\n</proposed_plan>"}}}}
+{{"type":"assistant","sessionId":"session","cwd":"{}","message":{{"role":"assistant","content":[{{"type":"text","text":"<proposed_plan>\n# Transcript Claude Hook\n\n- Capture transcript fallback\n</proposed_plan>"}}]}}}}
+"#,
+                repo_dir.display(),
+                repo_dir.display()
+            ),
+        )
+        .expect("write transcript");
+
+        run_hook_source(
+            &repo_dir,
+            &bin_dir,
+            "claude",
+            &format!(
+                r#"{{
+                    "session_id":"session",
+                    "transcript_path":"{}",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop"
+                }}"#,
+                transcript_path.display(),
+                repo_dir.display()
+            ),
+        );
+
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
+        assert!(state.contains("\"source\": \"claude\""));
+        assert!(state.contains("Capture transcript fallback"));
+        assert!(!state.contains("Do not capture"));
+    }
+
+    #[test]
+    fn hook_captures_claude_plan_mode_plan_from_transcript_path() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        let transcript_path = temp_dir.path().join("transcript.jsonl");
+        let plan_path = temp_dir.path().join("plans/native-plan.md");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        fs::create_dir_all(plan_path.parent().expect("plan parent")).expect("plan dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_no_pr(&bin_dir);
+
+        fs::write(
+            &transcript_path,
+            format!(
+                r##"{{"type":"assistant","sessionId":"session","cwd":"{}","message":{{"role":"assistant","content":[{{"type":"text","text":"No marked plan here."}}]}}}}
+{{"type":"user","uuid":"plan-turn","sessionId":"session","cwd":"{}","gitBranch":"feature/test","timestamp":"2026-06-11T07:04:40Z","toolUseResult":{{"plan":"# Plan: Claude Plan Mode\n\n- Capture native plan mode","filePath":"{}"}}}}
+"##,
+                repo_dir.display(),
+                repo_dir.display(),
+                plan_path.display()
+            ),
+        )
+        .expect("write transcript");
+
+        run_hook_source(
+            &repo_dir,
+            &bin_dir,
+            "claude",
+            &format!(
+                r#"{{
+                    "session_id":"session",
+                    "transcript_path":"{}",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop"
+                }}"#,
+                transcript_path.display(),
+                repo_dir.display()
+            ),
+        );
+
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
+        assert!(state.contains("\"source\": \"claude\""));
+        assert!(state.contains("Claude Plan Mode"));
+        assert!(state.contains("Capture native plan mode"));
+    }
+
+    #[test]
+    fn hook_records_claude_question_answer_decision() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_no_pr(&bin_dir);
+
+        run_hook_source(
+            &repo_dir,
+            &bin_dir,
+            "claude",
+            &format!(
+                r#"{{
+                    "session_id":"session",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop",
+                    "last_assistant_message":"Should Claude sync plans?"
+                }}"#,
+                repo_dir.display()
+            ),
+        );
+
+        run_hook_source(
+            &repo_dir,
+            &bin_dir,
+            "claude",
+            &format!(
+                r#"{{
+                    "session_id":"session",
+                    "cwd":"{}",
+                    "hook_event_name":"UserPromptSubmit",
+                    "prompt":"Yes, capture Claude planning decisions."
+                }}"#,
+                repo_dir.display()
+            ),
+        );
+
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
+        assert!(state.contains("\"source\": \"claude\""));
+        assert!(state.contains("Should Claude sync plans?"));
+        assert!(state.contains("Yes, capture Claude planning decisions."));
+        assert!(state.contains("\"pending_questions\": []"));
+    }
+
+    #[test]
     fn hook_posts_open_pr_comment_through_gh_api() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let bin_dir = temp_dir.path().join("bin");
@@ -229,6 +455,73 @@ mod unix {
 
         let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
         assert!(state.contains("\"posted_comments\""));
+        assert!(state.contains("\"comment_id\": 12345"));
+    }
+
+    #[test]
+    fn sync_explicit_pr_posts_unposted_items_from_all_sources() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        let captured_request = temp_dir.path().join("request.json");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_no_pr(&bin_dir);
+
+        run_hook(
+            &repo_dir,
+            &bin_dir,
+            &format!(
+                r#"{{
+                    "session_id":"codex-session",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop",
+                    "turn_id":"codex-turn",
+                    "last_assistant_message":"<proposed_plan>\n# Codex Plan\n\n- Sync Codex item\n</proposed_plan>"
+                }}"#,
+                repo_dir.display()
+            ),
+        );
+
+        run_hook_source(
+            &repo_dir,
+            &bin_dir,
+            "claude",
+            &format!(
+                r#"{{
+                    "session_id":"claude-session",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop",
+                    "last_assistant_message":"<proposed_plan>\n# Claude Plan\n\n- Sync Claude item\n</proposed_plan>"
+                }}"#,
+                repo_dir.display()
+            ),
+        );
+
+        write_fake_gh_explicit_open_pr(&bin_dir, &captured_request);
+
+        let output = Command::new(env!("CARGO_BIN_EXE_plan-to-git"))
+            .arg("sync")
+            .arg("--pr")
+            .arg("17")
+            .current_dir(&repo_dir)
+            .env("PATH", path_with_fake_bin(&bin_dir))
+            .env("PLAN_TO_GIT_STATE_PATH", state_path(&repo_dir))
+            .output()
+            .expect("run sync");
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).expect("stdout");
+        assert!(stdout.contains("posted 2 plan item(s) to pull request #17 comment #12345"));
+
+        let request = fs::read_to_string(captured_request).expect("captured request");
+        assert!(request.contains("Source: codex"));
+        assert!(request.contains("Sync Codex item"));
+        assert!(request.contains("Source: claude"));
+        assert!(request.contains("Sync Claude item"));
+
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
         assert!(state.contains("\"comment_id\": 12345"));
     }
 
@@ -358,6 +651,7 @@ mod unix {
             .arg("sync")
             .current_dir(&repo_dir)
             .env("PATH", path_with_fake_bin(&bin_dir))
+            .env("PLAN_TO_GIT_STATE_PATH", state_path(&repo_dir))
             .output()
             .expect("run sync");
 
@@ -397,6 +691,7 @@ mod unix {
             .arg("sync")
             .current_dir(&repo_dir)
             .env("PATH", path_with_fake_bin(&bin_dir))
+            .env("PLAN_TO_GIT_STATE_PATH", state_path(&repo_dir))
             .output()
             .expect("run sync");
 
@@ -439,13 +734,56 @@ mod unix {
         assert!(second.contains("skipped 1 duplicate(s)"));
     }
 
+    #[test]
+    fn import_claude_backfills_history_once_from_config_dir_without_syncing() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        let claude_home = temp_dir.path().join("claude");
+        let session_dir = claude_home.join("projects/-tmp-repo");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        fs::create_dir_all(&session_dir).expect("session dir");
+        write_fake_git(&bin_dir, &repo_dir);
+
+        fs::write(
+            session_dir.join("session.jsonl"),
+            format!(
+                r#"{{"type":"user","uuid":"user","sessionId":"session","cwd":"{}","gitBranch":"feature/test","message":{{"role":"user","content":"<proposed_plan>ignore user text</proposed_plan>"}}}}
+{{"type":"assistant","uuid":"turn-1","sessionId":"session","cwd":"{}","gitBranch":"feature/test","timestamp":"2026-06-11T12:34:56Z","message":{{"role":"assistant","content":[{{"type":"text","text":"<proposed_plan>\n# Claude Archived Plan\n\n- Import Claude archived plan\n</proposed_plan>"}}]}}}}
+{{"type":"assistant","uuid":"turn-2","sessionId":"session","cwd":"{}","gitBranch":"feature/other","message":{{"role":"assistant","content":[{{"type":"text","text":"<proposed_plan>\n# Wrong Branch\n\n- Do not import\n</proposed_plan>"}}]}}}}
+"#,
+                repo_dir.display(),
+                repo_dir.display(),
+                repo_dir.display()
+            ),
+        )
+        .expect("write session");
+
+        let first = run_import_claude_from_default(&repo_dir, &bin_dir, &claude_home);
+        assert!(first.contains("found 1 plan(s), added 1"));
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
+        assert!(state.contains("\"source\": \"claude\""));
+        assert!(state.contains("Import Claude archived plan"));
+        assert!(!state.contains("Do not import"));
+
+        let second = run_import_claude_from_default(&repo_dir, &bin_dir, &claude_home);
+        assert!(second.contains("found 1 plan(s), added 0"));
+        assert!(second.contains("skipped 1 duplicate(s)"));
+    }
+
     fn run_hook(repo_dir: &Path, bin_dir: &Path, payload: &str) {
+        run_hook_source(repo_dir, bin_dir, "codex", payload);
+    }
+
+    fn run_hook_source(repo_dir: &Path, bin_dir: &Path, source: &str, payload: &str) {
         let mut child = Command::new(env!("CARGO_BIN_EXE_plan-to-git"))
             .arg("hook")
             .arg("--source")
-            .arg("codex")
+            .arg(source)
             .current_dir(repo_dir)
             .env("PATH", path_with_fake_bin(bin_dir))
+            .env("PLAN_TO_GIT_STATE_PATH", state_path(repo_dir))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -471,11 +809,45 @@ mod unix {
             .arg("--no-sync")
             .current_dir(repo_dir)
             .env("PATH", path_with_fake_bin(bin_dir))
+            .env("PLAN_TO_GIT_STATE_PATH", state_path(repo_dir))
             .output()
             .expect("run import-codex");
 
         assert!(output.status.success());
         String::from_utf8(output.stdout).expect("stdout")
+    }
+
+    fn run_import_claude_from_default(
+        repo_dir: &Path,
+        bin_dir: &Path,
+        claude_home: &Path,
+    ) -> String {
+        let output = Command::new(env!("CARGO_BIN_EXE_plan-to-git"))
+            .arg("import-claude")
+            .arg("--no-sync")
+            .current_dir(repo_dir)
+            .env("PATH", path_with_fake_bin(bin_dir))
+            .env("CLAUDE_CONFIG_DIR", claude_home)
+            .env("PLAN_TO_GIT_STATE_PATH", state_path(repo_dir))
+            .output()
+            .expect("run import-claude");
+
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).expect("stdout")
+    }
+
+    fn state_path(repo_dir: &Path) -> PathBuf {
+        repo_dir.join(STATE_FILE_NAME)
+    }
+
+    fn find_state_files(dir: &Path) -> Vec<PathBuf> {
+        WalkDir::new(dir)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .map(walkdir::DirEntry::into_path)
+            .filter(|path| path.file_name().and_then(|name| name.to_str()) == Some(STATE_FILE_NAME))
+            .collect()
     }
 
     fn write_fake_git(bin_dir: &Path, repo_dir: &Path) {
@@ -527,6 +899,27 @@ exit 1
             r#"#!/usr/bin/env bash
 set -euo pipefail
 if [[ "$*" == "pr view --json number,state,url,isDraft" ]]; then
+  printf '%s\n' '{{"number":17,"state":"OPEN","url":"https://github.com/example/repo/pull/17"}}'
+  exit 0
+fi
+if [[ "$1 $2 $3" == "api --method POST" && "$4" == "repos/example/repo/issues/17/comments" && "$5" == "--input" ]]; then
+  cp "$6" "{}"
+  printf '%s\n' '{{"id":12345}}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+"#,
+            captured_request.display()
+        );
+        write_executable(&bin_dir.join("gh"), &script);
+    }
+
+    fn write_fake_gh_explicit_open_pr(bin_dir: &Path, captured_request: &Path) {
+        let script = format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "pr view 17 --json number,state,url,isDraft" ]]; then
   printf '%s\n' '{{"number":17,"state":"OPEN","url":"https://github.com/example/repo/pull/17"}}'
   exit 0
 fi
