@@ -341,6 +341,10 @@ pub fn load_state(path: &Path) -> AppResult<AgentPlanState> {
 }
 
 pub fn save_state(path: &Path, state: &AgentPlanState) -> AppResult<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
     let content = serde_json::to_string_pretty(state)?;
     fs::write(path, format!("{content}\n"))?;
     Ok(())

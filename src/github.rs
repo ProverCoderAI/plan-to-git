@@ -52,6 +52,28 @@ pub fn sync_state(context: &GitContext, state: &mut AgentPlanState) -> AppResult
     let Some(pull_request) = view_current_pr(&context.repo_root)? else {
         return Ok(SyncStatus::NoPullRequest);
     };
+
+    sync_to_pull_request(context, state, pull_request)
+}
+
+pub fn sync_state_to_pr(
+    context: &GitContext,
+    state: &mut AgentPlanState,
+    number: u64,
+) -> AppResult<SyncStatus> {
+    if !state.has_current_branch_items() {
+        return Ok(SyncStatus::NoItems);
+    }
+
+    let pull_request = view_pr(&context.repo_root, number)?;
+    sync_to_pull_request(context, state, pull_request)
+}
+
+fn sync_to_pull_request(
+    context: &GitContext,
+    state: &mut AgentPlanState,
+    pull_request: PullRequest,
+) -> AppResult<SyncStatus> {
     if !pull_request.state.eq_ignore_ascii_case("OPEN") {
         return Ok(SyncStatus::ClosedPullRequest {
             number: pull_request.number,
@@ -101,6 +123,22 @@ fn view_current_pr(repo_root: &Path) -> AppResult<Option<PullRequest>> {
     }
 
     Err(AppError::new(format!("gh pr view failed: {stderr}")).into())
+}
+
+fn view_pr(repo_root: &Path, number: u64) -> AppResult<PullRequest> {
+    let output = Command::new("gh")
+        .current_dir(repo_root)
+        .args(["pr", "view"])
+        .arg(number.to_string())
+        .args(["--json", "number,state,url,isDraft"])
+        .output()?;
+
+    if output.status.success() {
+        return Ok(serde_json::from_slice(&output.stdout)?);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(AppError::new(format!("gh pr view {number} failed: {stderr}")).into())
 }
 
 fn create_issue_comment(context: &GitContext, number: u64, body: &str) -> AppResult<u64> {
