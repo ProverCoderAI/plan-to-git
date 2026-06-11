@@ -18,6 +18,9 @@ pub enum SyncStatus {
         number: u64,
         state: String,
     },
+    DraftPullRequest {
+        number: u64,
+    },
     Unchanged {
         number: u64,
     },
@@ -32,6 +35,8 @@ pub enum SyncStatus {
 struct PullRequest {
     number: u64,
     state: String,
+    #[serde(default, rename = "isDraft")]
+    is_draft: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +56,11 @@ pub fn sync_state(context: &GitContext, state: &mut AgentPlanState) -> AppResult
         return Ok(SyncStatus::ClosedPullRequest {
             number: pull_request.number,
             state: pull_request.state,
+        });
+    }
+    if pull_request.is_draft {
+        return Ok(SyncStatus::DraftPullRequest {
+            number: pull_request.number,
         });
     }
 
@@ -78,7 +88,7 @@ pub fn sync_state(context: &GitContext, state: &mut AgentPlanState) -> AppResult
 fn view_current_pr(repo_root: &Path) -> AppResult<Option<PullRequest>> {
     let output = Command::new("gh")
         .current_dir(repo_root)
-        .args(["pr", "view", "--json", "number,state,url"])
+        .args(["pr", "view", "--json", "number,state,url,isDraft"])
         .output()?;
 
     if output.status.success() {
