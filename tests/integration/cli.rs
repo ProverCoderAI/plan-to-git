@@ -656,7 +656,7 @@ mod unix {
     }
 
     #[test]
-    fn hook_leaves_plans_queued_when_pr_is_draft() {
+    fn hook_posts_comment_when_pr_is_draft() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let bin_dir = temp_dir.path().join("bin");
         let repo_dir = temp_dir.path().join("repo");
@@ -675,20 +675,22 @@ mod unix {
                     "cwd":"{}",
                     "hook_event_name":"Stop",
                     "turn_id":"turn",
-                    "last_assistant_message":"<proposed_plan>\n# Queued\n\n- Wait for a valid PR\n</proposed_plan>"
+                    "last_assistant_message":"<proposed_plan>\n# Draft\n\n- Post to a draft PR\n</proposed_plan>"
                 }}"#,
                 repo_dir.display()
             ),
         );
 
         let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
-        assert!(state.contains("Wait for a valid PR"));
-        assert!(state.contains("\"posted_comments\": []"));
-        assert!(!captured_request.exists());
+        assert!(state.contains("Post to a draft PR"));
+        assert!(state.contains("\"comment_id\": 12345"));
+        let request = fs::read_to_string(captured_request).expect("captured request");
+        assert!(request.contains("Agent Plan Update"));
+        assert!(request.contains("Post to a draft PR"));
     }
 
     #[test]
-    fn sync_reports_draft_pr_and_does_not_comment() {
+    fn sync_posts_comment_when_pr_is_draft() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let bin_dir = temp_dir.path().join("bin");
         let repo_dir = temp_dir.path().join("repo");
@@ -696,7 +698,7 @@ mod unix {
         fs::create_dir_all(&bin_dir).expect("bin dir");
         fs::create_dir_all(&repo_dir).expect("repo dir");
         write_fake_git(&bin_dir, &repo_dir);
-        write_fake_gh_draft_pr(&bin_dir, &captured_request);
+        write_fake_gh_no_pr(&bin_dir);
 
         run_hook(
             &repo_dir,
@@ -712,6 +714,9 @@ mod unix {
                 repo_dir.display()
             ),
         );
+
+        assert!(!captured_request.exists());
+        write_fake_gh_draft_pr(&bin_dir, &captured_request);
 
         let output = Command::new(env!("CARGO_BIN_EXE_plan-to-git"))
             .arg("sync")
@@ -723,8 +728,10 @@ mod unix {
 
         assert!(output.status.success());
         let stdout = String::from_utf8(output.stdout).expect("stdout");
-        assert!(stdout.contains("pull request #17 is a draft; leaving plan items queued"));
-        assert!(!captured_request.exists());
+        assert!(stdout.contains("posted 1 plan item(s) to pull request #17 comment #12345"));
+        let request = fs::read_to_string(captured_request).expect("captured request");
+        assert!(request.contains("Agent Plan Update"));
+        assert!(request.contains("Wait for a valid PR"));
     }
 
     #[test]
@@ -798,6 +805,122 @@ mod unix {
         let second = run_import_codex(&repo_dir, &bin_dir, &codex_home);
         assert!(second.contains("found 1 plan(s), added 0"));
         assert!(second.contains("skipped 1 duplicate(s)"));
+    }
+
+    #[test]
+    fn import_codex_backfills_structured_update_plan_calls() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        let codex_home = temp_dir.path().join("codex");
+        let session_dir = codex_home.join("sessions/2026/06/17");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        fs::create_dir_all(&session_dir).expect("session dir");
+        write_fake_git(&bin_dir, &repo_dir);
+
+        let arguments = serde_json::to_string(&serde_json::json!({
+            "explanation": "Structured Codex plan from the planner tool.",
+            "plan": [
+                {
+                    "step": "Inspect matched history files",
+                    "status": "completed"
+                },
+                {
+                    "step": "Import update_plan calls",
+                    "status": "in_progress"
+                },
+                {
+                    "step": "Verify PR sync has queued items",
+                    "status": "pending"
+                }
+            ]
+        }))
+        .expect("serialize update_plan arguments");
+        let arguments_json = serde_json::to_string(&arguments).expect("quote arguments");
+
+        fs::write(
+            session_dir.join("rollout-2026-06-17T12-00-00-plan.jsonl"),
+            format!(
+                r#"{{"type":"session_meta","payload":{{"id":"session","cwd":"{}","git":{{"branch":"feature/test","repository_url":"https://github.com/example/repo.git"}}}}}}
+{{"timestamp":"2026-06-17T12:34:56Z","type":"response_item","payload":{{"type":"function_call","name":"update_plan","arguments":{arguments_json},"call_id":"call-plan"}}}}
+"#,
+                repo_dir.display()
+            ),
+        )
+        .expect("write session");
+
+        let first = run_import_codex(&repo_dir, &bin_dir, &codex_home);
+        assert!(first.contains("found 1 plan(s), added 1"));
+        let state = fs::read_to_string(repo_dir.join(STATE_FILE_NAME)).expect("state file");
+        assert!(state.contains("Codex Plan"));
+        assert!(state.contains("Structured Codex plan from the planner tool."));
+        assert!(state.contains("completed: Inspect matched history files"));
+        assert!(state.contains("in_progress: Import update_plan calls"));
+        assert!(state.contains("pending: Verify PR sync has queued items"));
+    }
+
+    #[test]
+    fn import_codex_syncs_structured_update_plan_calls_to_open_pr() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        let codex_home = temp_dir.path().join("codex");
+        let session_dir = codex_home.join("sessions/2026/06/17");
+        let captured_request = temp_dir.path().join("comment.json");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        fs::create_dir_all(&session_dir).expect("session dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_open_pr(&bin_dir, &captured_request);
+
+        let arguments = serde_json::to_string(&serde_json::json!({
+            "explanation": "Structured Codex plan reaches PR sync.",
+            "plan": [
+                {
+                    "step": "Import the planner event",
+                    "status": "completed"
+                },
+                {
+                    "step": "Post it to the pull request",
+                    "status": "in_progress"
+                }
+            ]
+        }))
+        .expect("serialize update_plan arguments");
+        let arguments_json = serde_json::to_string(&arguments).expect("quote arguments");
+
+        fs::write(
+            session_dir.join("rollout-2026-06-17T12-00-00-plan.jsonl"),
+            format!(
+                r#"{{"type":"session_meta","payload":{{"id":"session","cwd":"{}","git":{{"branch":"feature/test","repository_url":"https://github.com/example/repo.git"}}}}}}
+{{"timestamp":"2026-06-17T12:34:56Z","type":"response_item","payload":{{"type":"function_call","name":"update_plan","arguments":{arguments_json},"call_id":"call-plan"}}}}
+"#,
+                repo_dir.display()
+            ),
+        )
+        .expect("write session");
+
+        let output = Command::new(env!("CARGO_BIN_EXE_plan-to-git"))
+            .arg("import-codex")
+            .arg("--codex-home")
+            .arg(&codex_home)
+            .current_dir(&repo_dir)
+            .env("PATH", path_with_fake_bin(&bin_dir))
+            .env("PLAN_TO_GIT_STATE_PATH", state_path(&repo_dir))
+            .output()
+            .expect("run import-codex");
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).expect("stdout");
+        assert!(stdout.contains("found 1 plan(s), added 1"));
+        assert!(stdout.contains("posted 1 plan item(s) to pull request #17"));
+
+        let request = fs::read_to_string(captured_request).expect("captured request");
+        assert!(request.contains("Agent Plan Update"));
+        assert!(request.contains("Structured Codex plan reaches PR sync."));
+        assert!(request.contains("completed: Import the planner event"));
+        assert!(request.contains("in_progress: Post it to the pull request"));
     }
 
     #[test]

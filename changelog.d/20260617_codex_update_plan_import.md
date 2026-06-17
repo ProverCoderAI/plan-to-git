@@ -1,0 +1,1 @@
+- Fixed Codex history import so structured `update_plan` planner calls from `~/.codex/sessions` are captured and queued for PR sync instead of reporting matched session files with zero plans.

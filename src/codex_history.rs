@@ -9,7 +9,7 @@ use crate::history::{
     collect_jsonl_files, line_turn_id, looks_like_rendered_plan_stack, session_id_from_path,
     HistoryImportOutcome,
 };
-use crate::normalize::extract_marked_plans;
+use crate::normalize::{extract_marked_plans, CapturedPlan};
 use crate::store::{AgentPlanState, AgentSource, NewPlanItem};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,9 +71,10 @@ fn import_session_file(
             continue;
         }
 
-        let Some(message) = plan_message_text(&event) else {
+        let plans = event_plans(&event);
+        if plans.is_empty() {
             continue;
-        };
+        }
 
         let session_id = metadata
             .as_ref()
@@ -90,7 +91,7 @@ fn import_session_file(
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
 
-        for plan in extract_marked_plans(&message) {
+        for plan in plans {
             outcome.plans_found += 1;
             if looks_like_rendered_plan_stack(&plan.content) {
                 outcome.rendered_stacks_skipped += 1;
@@ -176,6 +177,84 @@ fn session_matches_context(session: &SessionMetadata, context: &GitContext) -> b
 
 fn plan_message_text(event: &Value) -> Option<String> {
     assistant_message_text(event).or_else(|| task_complete_message_text(event))
+}
+
+fn event_plans(event: &Value) -> Vec<CapturedPlan> {
+    if let Some(message) = plan_message_text(event) {
+        return extract_marked_plans(&message);
+    }
+
+    codex_update_plan(event).into_iter().collect()
+}
+
+fn codex_update_plan(event: &Value) -> Option<CapturedPlan> {
+    if event.get("type").and_then(Value::as_str) != Some("response_item") {
+        return None;
+    }
+
+    let payload = event.get("payload")?;
+    if payload.get("type").and_then(Value::as_str) != Some("function_call") {
+        return None;
+    }
+    if payload.get("name").and_then(Value::as_str) != Some("update_plan") {
+        return None;
+    }
+
+    let arguments = payload.get("arguments").and_then(Value::as_str)?;
+    let arguments = serde_json::from_str::<Value>(arguments).ok()?;
+    captured_plan_from_update_plan_arguments(&arguments)
+}
+
+fn captured_plan_from_update_plan_arguments(arguments: &Value) -> Option<CapturedPlan> {
+    let steps = arguments
+        .get("plan")?
+        .as_array()?
+        .iter()
+        .filter_map(update_plan_step)
+        .collect::<Vec<_>>();
+    if steps.is_empty() {
+        return None;
+    }
+
+    let mut content = String::from("# Codex Plan\n");
+    if let Some(explanation) = arguments
+        .get("explanation")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|explanation| !explanation.is_empty())
+    {
+        content.push('\n');
+        content.push_str(explanation);
+        content.push('\n');
+    }
+
+    content.push_str("\n## Steps\n\n");
+    for (status, step) in steps {
+        content.push_str("- ");
+        content.push_str(status);
+        content.push_str(": ");
+        content.push_str(step);
+        content.push('\n');
+    }
+
+    Some(CapturedPlan {
+        title: Some(String::from("Codex Plan")),
+        content: content.trim_end().to_owned(),
+    })
+}
+
+fn update_plan_step(item: &Value) -> Option<(&str, &str)> {
+    let step = item.get("step").and_then(Value::as_str)?.trim();
+    if step.is_empty() {
+        return None;
+    }
+    let status = item
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|status| !status.is_empty())
+        .unwrap_or("pending");
+    Some((status, step))
 }
 
 fn assistant_message_text(event: &Value) -> Option<String> {
@@ -271,6 +350,35 @@ mod tests {
             "payload": {
                 "type": "task_complete",
                 "last_agent_message": text
+            }
+        }))
+    }
+
+    fn update_plan_line(timestamp: &str) -> String {
+        json_line(&json!({
+            "timestamp": timestamp,
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "update_plan",
+                "arguments": serde_json::to_string(&json!({
+                    "explanation": "Structured Codex planning event.",
+                    "plan": [
+                        {
+                            "step": "Inspect failing import output",
+                            "status": "completed"
+                        },
+                        {
+                            "step": "Import structured plan calls",
+                            "status": "in_progress"
+                        },
+                        {
+                            "step": "Run regression tests",
+                            "status": "pending"
+                        }
+                    ]
+                })).expect("serialize update_plan arguments"),
+                "call_id": "call-plan"
             }
         }))
     }
@@ -421,6 +529,54 @@ mod tests {
         assert_eq!(outcome.plans_added, 1);
         assert!(state.items[0].content.contains("Import completion text"));
         assert_eq!(state.items[0].created_at, "2026-05-31T12:34:56Z");
+    }
+
+    #[test]
+    fn imports_structured_update_plan_function_calls() {
+        let temp_dir = tempdir().expect("temp dir");
+        let repo_root = temp_dir.path().join("repo");
+        let codex_home = temp_dir.path().join("codex");
+        let session_dir = codex_home.join("sessions/2026/06/17");
+        fs::create_dir_all(&repo_root).expect("repo root");
+        fs::create_dir_all(&session_dir).expect("session dir");
+
+        write_jsonl(
+            &session_dir.join("rollout-2026-06-17T12-00-00-plan.jsonl"),
+            &[
+                session_meta_line(&repo_root, "feature/test"),
+                update_plan_line("2026-06-17T12:34:56Z"),
+            ],
+        );
+
+        let context = GitContext {
+            repo_root,
+            repo_slug: Some("example/repo".to_owned()),
+            branch: Some("feature/test".to_owned()),
+            head_sha: Some("abcdef".to_owned()),
+        };
+        let mut state = AgentPlanState::default();
+
+        let outcome = import_codex_history(&codex_home, &context, &mut state).expect("import");
+
+        assert_eq!(outcome.files_scanned, 1);
+        assert_eq!(outcome.files_matched, 1);
+        assert_eq!(outcome.plans_found, 1);
+        assert_eq!(outcome.plans_added, 1);
+        assert_eq!(state.items.len(), 1);
+        assert_eq!(state.items[0].title.as_deref(), Some("Codex Plan"));
+        assert!(state.items[0]
+            .content
+            .contains("Structured Codex planning event."));
+        assert!(state.items[0]
+            .content
+            .contains("- completed: Inspect failing import output"));
+        assert!(state.items[0]
+            .content
+            .contains("- in_progress: Import structured plan calls"));
+        assert!(state.items[0]
+            .content
+            .contains("- pending: Run regression tests"));
+        assert_eq!(state.items[0].created_at, "2026-06-17T12:34:56Z");
     }
 
     #[test]

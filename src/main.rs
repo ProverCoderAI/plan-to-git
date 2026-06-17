@@ -276,9 +276,6 @@ fn print_sync_status(status: &SyncStatus) {
         SyncStatus::ClosedPullRequest { number, state } => {
             println!("pull request #{number} is {state}; leaving plan items queued");
         }
-        SyncStatus::DraftPullRequest { number } => {
-            println!("pull request #{number} is a draft; leaving plan items queued");
-        }
         SyncStatus::Unchanged { number } => {
             println!("no new plan items to comment on pull request #{number}");
         }

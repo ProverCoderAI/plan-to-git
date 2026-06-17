@@ -252,10 +252,10 @@ if [[ "$*" == "pr view --json number,state,url,isDraft" ]]; then
   printf '%s\n' '{{"number":17,"state":"OPEN","url":"https://github.com/example/repo/pull/17","isDraft":true}}'
   exit 0
 fi
-if [[ "$1" == "api" ]]; then
-  printf '%s\n' "$*" > "{}"
-  echo "comment API should not be called for draft PR" >&2
-  exit 1
+if [[ "$1 $2 $3" == "api --method POST" && "$4" == "repos/example/repo/issues/17/comments" && "$5" == "--input" ]]; then
+  cp "$6" "{}"
+  printf '%s\n' '{{"id":12345}}'
+  exit 0
 fi
 echo "unexpected gh args: $*" >&2
 exit 1
