@@ -7,7 +7,7 @@ use plan_to_git::capture;
 use plan_to_git::claude_history;
 use plan_to_git::codex_history;
 use plan_to_git::error::{AppError, AppResult};
-use plan_to_git::git;
+use plan_to_git::git::{self, parse_github_slug_or_slug};
 use plan_to_git::github::{self, SyncStatus};
 use plan_to_git::history::HistoryImportOutcome;
 use plan_to_git::render::render_plan_comment;
@@ -20,6 +20,9 @@ use plan_to_git::store::{load_state, save_state, STATE_FILE_NAME};
     about = "Capture agent plans and sync them to GitHub pull requests"
 )]
 struct Cli {
+    /// Target GitHub repository for state and PR comments. Accepts owner/repo or a GitHub URL.
+    #[arg(long, env = "PLAN_TO_GIT_REPO", global = true)]
+    repo: Option<String>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -85,12 +88,12 @@ fn main() {
 
     match &cli.command {
         Commands::Hook { source } => {
-            if let Err(error) = run_hook(*source) {
+            if let Err(error) = run_hook(*source, cli.repo.as_deref()) {
                 eprintln!("plan-to-git hook error: {error}");
             }
         }
         command => {
-            if let Err(error) = run(command) {
+            if let Err(error) = run(command, cli.repo.as_deref()) {
                 eprintln!("plan-to-git error: {error}");
                 std::process::exit(1);
             }
@@ -98,7 +101,8 @@ fn main() {
     }
 }
 
-fn run(command: &Commands) -> AppResult<()> {
+fn run(command: &Commands, repo_slug_override: Option<&str>) -> AppResult<()> {
+    let target_repo = target_repo(repo_slug_override)?;
     match command {
         Commands::Hook { .. } => Ok(()),
         Commands::ImportCodex {
@@ -130,7 +134,7 @@ fn run(command: &Commands) -> AppResult<()> {
                 return Ok(());
             }
 
-            let sync_status = github::sync_state(&context, &mut state)?;
+            let sync_status = github::sync_state(&context, &mut state, target_repo.as_deref())?;
             save_state(&state_path, &state)?;
             print_sync_status(&sync_status);
             Ok(())
@@ -165,7 +169,7 @@ fn run(command: &Commands) -> AppResult<()> {
                 return Ok(());
             }
 
-            let sync_status = github::sync_state(&context, &mut state)?;
+            let sync_status = github::sync_state(&context, &mut state, target_repo.as_deref())?;
             save_state(&state_path, &state)?;
             print_sync_status(&sync_status);
             Ok(())
@@ -179,9 +183,9 @@ fn run(command: &Commands) -> AppResult<()> {
                 context.head_sha.clone(),
             );
             let sync_status = if let Some(pr_number) = pr {
-                github::sync_state_to_pr(&context, &mut state, *pr_number)?
+                github::sync_state_to_pr(&context, &mut state, *pr_number, target_repo.as_deref())?
             } else {
-                github::sync_state(&context, &mut state)?
+                github::sync_state(&context, &mut state, target_repo.as_deref())?
             };
             save_state(&state_path, &state)?;
             print_sync_status(&sync_status);
@@ -216,13 +220,14 @@ fn run(command: &Commands) -> AppResult<()> {
     }
 }
 
-fn run_hook(source: HookSource) -> AppResult<()> {
+fn run_hook(source: HookSource, repo_slug_override: Option<&str>) -> AppResult<()> {
+    let target_repo = target_repo(repo_slug_override)?;
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
 
     match source {
         HookSource::Codex => {
-            let outcome = capture::process_codex_hook(&input)?;
+            let outcome = capture::process_codex_hook_with_repo(&input, target_repo.as_deref())?;
             eprintln!(
                 "plan-to-git: captured {} plan(s), {} decision(s), {} pending question set(s), sync={:?}",
                 outcome.captured_plans,
@@ -232,7 +237,7 @@ fn run_hook(source: HookSource) -> AppResult<()> {
             );
         }
         HookSource::Claude => {
-            let outcome = capture::process_claude_hook(&input)?;
+            let outcome = capture::process_claude_hook_with_repo(&input, target_repo.as_deref())?;
             eprintln!(
                 "plan-to-git: captured {} plan(s), {} decision(s), {} pending question set(s), sync={:?}",
                 outcome.captured_plans,
@@ -251,6 +256,17 @@ fn state_context() -> AppResult<(git::GitContext, std::path::PathBuf)> {
     let context = git::discover(&cwd)?;
     let state_path = state_path::state_path(&context);
     Ok((context, state_path))
+}
+
+fn target_repo(repo_slug_override: Option<&str>) -> AppResult<Option<String>> {
+    repo_slug_override.map_or(Ok(None), |repo| {
+        let repo_slug = parse_github_slug_or_slug(repo).ok_or_else(|| {
+            AppError::new(format!(
+                "expected GitHub repository as owner/repo or GitHub URL, got {repo}"
+            ))
+        })?;
+        Ok(Some(repo_slug))
+    })
 }
 
 fn print_sync_status(status: &SyncStatus) {

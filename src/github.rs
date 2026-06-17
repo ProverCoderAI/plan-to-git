@@ -44,35 +44,41 @@ struct IssueComment {
     id: u64,
 }
 
-pub fn sync_state(context: &GitContext, state: &mut AgentPlanState) -> AppResult<SyncStatus> {
+pub fn sync_state(
+    context: &GitContext,
+    state: &mut AgentPlanState,
+    target_repo: Option<&str>,
+) -> AppResult<SyncStatus> {
     if !state.has_current_branch_items() {
         return Ok(SyncStatus::NoItems);
     }
 
-    let Some(pull_request) = view_current_pr(&context.repo_root)? else {
+    let Some(pull_request) = view_current_pr(&context.repo_root, target_repo)? else {
         return Ok(SyncStatus::NoPullRequest);
     };
 
-    sync_to_pull_request(context, state, pull_request)
+    sync_to_pull_request(context, state, pull_request, target_repo)
 }
 
 pub fn sync_state_to_pr(
     context: &GitContext,
     state: &mut AgentPlanState,
     number: u64,
+    target_repo: Option<&str>,
 ) -> AppResult<SyncStatus> {
     if !state.has_current_branch_items() {
         return Ok(SyncStatus::NoItems);
     }
 
-    let pull_request = view_pr(&context.repo_root, number)?;
-    sync_to_pull_request(context, state, pull_request)
+    let pull_request = view_pr(&context.repo_root, number, target_repo)?;
+    sync_to_pull_request(context, state, pull_request, target_repo)
 }
 
 fn sync_to_pull_request(
     context: &GitContext,
     state: &mut AgentPlanState,
     pull_request: PullRequest,
+    target_repo: Option<&str>,
 ) -> AppResult<SyncStatus> {
     if !pull_request.state.eq_ignore_ascii_case("OPEN") {
         return Ok(SyncStatus::ClosedPullRequest {
@@ -97,7 +103,8 @@ fn sync_to_pull_request(
         (render_plan_comment(state, &items), item_ids, items.len())
     };
 
-    let comment_id = create_issue_comment(context, pull_request.number, &comment_body)?;
+    let comment_id =
+        create_issue_comment(context, pull_request.number, &comment_body, target_repo)?;
     state.mark_items_commented(pull_request.number, &item_ids, Some(comment_id));
 
     Ok(SyncStatus::Commented {
@@ -107,11 +114,15 @@ fn sync_to_pull_request(
     })
 }
 
-fn view_current_pr(repo_root: &Path) -> AppResult<Option<PullRequest>> {
-    let output = Command::new("gh")
+fn view_current_pr(repo_root: &Path, target_repo: Option<&str>) -> AppResult<Option<PullRequest>> {
+    let mut command = Command::new("gh");
+    command
         .current_dir(repo_root)
-        .args(["pr", "view", "--json", "number,state,url,isDraft"])
-        .output()?;
+        .args(["pr", "view", "--json", "number,state,url,isDraft"]);
+    if let Some(target_repo) = target_repo {
+        command.args(["--repo", target_repo]);
+    }
+    let output = command.output()?;
 
     if output.status.success() {
         return Ok(Some(serde_json::from_slice(&output.stdout)?));
@@ -125,13 +136,17 @@ fn view_current_pr(repo_root: &Path) -> AppResult<Option<PullRequest>> {
     Err(AppError::new(format!("gh pr view failed: {stderr}")).into())
 }
 
-fn view_pr(repo_root: &Path, number: u64) -> AppResult<PullRequest> {
-    let output = Command::new("gh")
+fn view_pr(repo_root: &Path, number: u64, target_repo: Option<&str>) -> AppResult<PullRequest> {
+    let mut command = Command::new("gh");
+    command
         .current_dir(repo_root)
         .args(["pr", "view"])
         .arg(number.to_string())
-        .args(["--json", "number,state,url,isDraft"])
-        .output()?;
+        .args(["--json", "number,state,url,isDraft"]);
+    if let Some(target_repo) = target_repo {
+        command.args(["--repo", target_repo]);
+    }
+    let output = command.output()?;
 
     if output.status.success() {
         return Ok(serde_json::from_slice(&output.stdout)?);
@@ -141,10 +156,14 @@ fn view_pr(repo_root: &Path, number: u64) -> AppResult<PullRequest> {
     Err(AppError::new(format!("gh pr view {number} failed: {stderr}")).into())
 }
 
-fn create_issue_comment(context: &GitContext, number: u64, body: &str) -> AppResult<u64> {
-    let repo_slug = context
-        .repo_slug
-        .as_deref()
+fn create_issue_comment(
+    context: &GitContext,
+    number: u64,
+    body: &str,
+    target_repo: Option<&str>,
+) -> AppResult<u64> {
+    let repo_slug = target_repo
+        .or(context.repo_slug.as_deref())
         .ok_or_else(|| AppError::new("cannot sync PR comments without a GitHub origin remote"))?;
     let request_file = temp_request_path();
     let request = serde_json::json!({ "body": body });

@@ -54,6 +54,13 @@ struct ClaudeHookInput {
 }
 
 pub fn process_codex_hook(input: &str) -> AppResult<HookOutcome> {
+    process_codex_hook_with_repo(input, None)
+}
+
+pub fn process_codex_hook_with_repo(
+    input: &str,
+    target_repo: Option<&str>,
+) -> AppResult<HookOutcome> {
     let hook_input: CodexHookInput = serde_json::from_str(input)?;
     process_agent_hook(&AgentHookInput {
         source: AgentSource::Codex,
@@ -64,10 +71,18 @@ pub fn process_codex_hook(input: &str) -> AppResult<HookOutcome> {
         prompt: hook_input.prompt,
         last_assistant_message: hook_input.last_assistant_message,
         transcript_path: None,
+        target_repo,
     })
 }
 
 pub fn process_claude_hook(input: &str) -> AppResult<HookOutcome> {
+    process_claude_hook_with_repo(input, None)
+}
+
+pub fn process_claude_hook_with_repo(
+    input: &str,
+    target_repo: Option<&str>,
+) -> AppResult<HookOutcome> {
     let hook_input: ClaudeHookInput = serde_json::from_str(input)?;
     process_agent_hook(&AgentHookInput {
         source: AgentSource::Claude,
@@ -78,10 +93,11 @@ pub fn process_claude_hook(input: &str) -> AppResult<HookOutcome> {
         prompt: hook_input.prompt,
         last_assistant_message: hook_input.last_assistant_message,
         transcript_path: hook_input.transcript_path,
+        target_repo,
     })
 }
 
-struct AgentHookInput {
+struct AgentHookInput<'a> {
     source: AgentSource,
     session_id: Option<String>,
     cwd: Option<PathBuf>,
@@ -90,9 +106,10 @@ struct AgentHookInput {
     prompt: Option<String>,
     last_assistant_message: Option<String>,
     transcript_path: Option<PathBuf>,
+    target_repo: Option<&'a str>,
 }
 
-fn process_agent_hook(hook_input: &AgentHookInput) -> AppResult<HookOutcome> {
+fn process_agent_hook(hook_input: &AgentHookInput<'_>) -> AppResult<HookOutcome> {
     let start_dir = hook_input.cwd.as_deref().unwrap_or_else(|| Path::new("."));
     let context = git::discover(start_dir)?;
     let state_path = state_path::state_path(&context);
@@ -200,7 +217,7 @@ fn process_agent_hook(hook_input: &AgentHookInput) -> AppResult<HookOutcome> {
         save_state(&state_path, &state)?;
     }
 
-    let sync_status = github::sync_state(&context, &mut state)?;
+    let sync_status = github::sync_state(&context, &mut state, hook_input.target_repo)?;
     if changed || !state.items.is_empty() || !state.pending_questions.is_empty() {
         save_state(&state_path, &state)?;
     }

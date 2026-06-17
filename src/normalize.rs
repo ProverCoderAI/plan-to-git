@@ -223,17 +223,12 @@ fn find_ascii_case_insensitive(haystack: &str, needle: &str, from: usize) -> Opt
 
     let haystack = haystack.as_bytes();
     let needle = needle.as_bytes();
-    for index in from..=haystack.len().saturating_sub(needle.len()) {
-        if haystack[index..index + needle.len()]
+    (from..=haystack.len().saturating_sub(needle.len())).find(|&index| {
+        haystack[index..index + needle.len()]
             .iter()
             .zip(needle.iter())
             .all(|(candidate, expected)| candidate.eq_ignore_ascii_case(expected))
-        {
-            return Some(index);
-        }
-    }
-
-    None
+    })
 }
 
 fn closes_plan_block(message: &str, close_tag_end: usize) -> bool {

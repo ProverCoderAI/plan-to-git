@@ -19,6 +19,7 @@ plan-to-git show
 plan-to-git render
 plan-to-git sync
 plan-to-git sync --pr 7
+plan-to-git --repo owner/repo sync --pr 7
 plan-to-git import-codex --dry-run
 plan-to-git import-codex
 plan-to-git import-claude --dry-run
@@ -102,6 +103,8 @@ When `gh pr view` finds an open, non-draft PR for the current branch, `plan-to-g
 ```
 
 Use `plan-to-git sync --pr 7` to post queued current-branch items to a specific pull request instead of relying on branch-based PR discovery. `sync` is source-agnostic: one run posts all unposted current-branch items in the state file, whether they came from Codex, Claude Code, or another supported agent.
+
+Use `--repo owner/repo` or `PLAN_TO_GIT_REPO=owner/repo` when the local `origin` remote is not the pull request target repository, for example in fork-origin workflows. The explicit repository only selects the GitHub PR/comment target; local state and history matching remain tied to the current checkout.
 
 The PR description is not edited. Closed, merged, or still-draft pull requests are not commented on; new items stay queued until the PR is valid (open and marked ready for review). After a comment is created, the local state file records the posted item hashes and GitHub comment id so repeated `sync`, `hook`, `import-codex`, or `import-claude` runs do not post the same plan again, including on a later PR.
 
