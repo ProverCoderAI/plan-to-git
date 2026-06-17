@@ -45,6 +45,11 @@ pub fn parse_github_slug(remote: &str) -> Option<String> {
     None
 }
 
+#[must_use]
+pub fn parse_github_slug_or_slug(value: &str) -> Option<String> {
+    parse_github_slug(value).or_else(|| normalize_slug(value.trim()))
+}
+
 fn normalize_slug(path: &str) -> Option<String> {
     let mut parts = path.split('/');
     let owner = parts.next()?;

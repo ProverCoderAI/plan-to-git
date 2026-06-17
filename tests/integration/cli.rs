@@ -526,6 +526,68 @@ mod unix {
     }
 
     #[test]
+    fn sync_explicit_pr_uses_explicit_repo_context() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let bin_dir = temp_dir.path().join("bin");
+        let repo_dir = temp_dir.path().join("repo");
+        let state_dir = temp_dir.path().join("state");
+        let captured_request = temp_dir.path().join("request.json");
+        fs::create_dir_all(&bin_dir).expect("bin dir");
+        fs::create_dir_all(&repo_dir).expect("repo dir");
+        write_fake_git(&bin_dir, &repo_dir);
+        write_fake_gh_no_pr(&bin_dir);
+
+        run_hook_with_env(
+            &repo_dir,
+            &bin_dir,
+            "codex",
+            &format!(
+                r#"{{
+                    "session_id":"codex-session",
+                    "cwd":"{}",
+                    "hook_event_name":"Stop",
+                    "turn_id":"codex-turn",
+                    "last_assistant_message":"<proposed_plan>\n# Upstream Plan\n\n- Sync to upstream\n</proposed_plan>"
+                }}"#,
+                repo_dir.display()
+            ),
+            &[
+                ("PLAN_TO_GIT_REPO", "upstream/repo"),
+                (
+                    "PLAN_TO_GIT_STATE_DIR",
+                    state_dir.to_str().expect("state dir"),
+                ),
+            ],
+        );
+
+        write_fake_gh_explicit_open_pr_for_repo(&bin_dir, "upstream/repo", &captured_request);
+
+        let output = Command::new(env!("CARGO_BIN_EXE_plan-to-git"))
+            .arg("--repo")
+            .arg("upstream/repo")
+            .arg("sync")
+            .arg("--pr")
+            .arg("17")
+            .current_dir(&repo_dir)
+            .env("PATH", path_with_fake_bin(&bin_dir))
+            .env("PLAN_TO_GIT_STATE_DIR", &state_dir)
+            .output()
+            .expect("run sync");
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).expect("stdout");
+        assert!(stdout.contains("posted 1 plan item(s) to pull request #17 comment #12345"));
+
+        let request = fs::read_to_string(captured_request).expect("captured request");
+        assert!(request.contains("Sync to upstream"));
+
+        let state_files = find_state_files(&state_dir);
+        assert_eq!(state_files.len(), 1);
+        let state_path = state_files[0].to_string_lossy();
+        assert!(state_path.contains("example-repo"));
+    }
+
+    #[test]
     fn hook_leaves_plans_queued_when_pr_is_merged() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let bin_dir = temp_dir.path().join("bin");
@@ -777,17 +839,39 @@ mod unix {
     }
 
     fn run_hook_source(repo_dir: &Path, bin_dir: &Path, source: &str, payload: &str) {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_plan-to-git"))
+        run_hook_with_env(repo_dir, bin_dir, source, payload, &[]);
+    }
+
+    fn run_hook_with_env(
+        repo_dir: &Path,
+        bin_dir: &Path,
+        source: &str,
+        payload: &str,
+        envs: &[(&str, &str)],
+    ) {
+        let has_state_override = envs
+            .iter()
+            .any(|(key, _)| matches!(*key, "PLAN_TO_GIT_STATE_PATH" | "PLAN_TO_GIT_STATE_DIR"));
+
+        let mut command = Command::new(env!("CARGO_BIN_EXE_plan-to-git"));
+        command
             .arg("hook")
             .arg("--source")
             .arg(source)
             .current_dir(repo_dir)
             .env("PATH", path_with_fake_bin(bin_dir))
-            .env("PLAN_TO_GIT_STATE_PATH", state_path(repo_dir))
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("spawn plan-to-git");
+            .stdout(Stdio::piped());
+
+        if !has_state_override {
+            command.env("PLAN_TO_GIT_STATE_PATH", state_path(repo_dir));
+        }
+
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+
+        let mut child = command.spawn().expect("spawn plan-to-git");
 
         child
             .stdin
@@ -888,6 +972,10 @@ if [[ "$*" == "pr view --json number,state,url,isDraft" ]]; then
   echo 'no pull requests found for branch "feature/test"' >&2
   exit 1
 fi
+if [[ "$*" == pr\ view\ --json\ number,state,url,isDraft\ --repo\ * ]]; then
+  echo 'no pull requests found for branch "feature/test"' >&2
+  exit 1
+fi
 echo "unexpected gh args: $*" >&2
 exit 1
 "#;
@@ -932,6 +1020,32 @@ echo "unexpected gh args: $*" >&2
 exit 1
 "#,
             captured_request.display()
+        );
+        write_executable(&bin_dir.join("gh"), &script);
+    }
+
+    fn write_fake_gh_explicit_open_pr_for_repo(
+        bin_dir: &Path,
+        repo_slug: &str,
+        captured_request: &Path,
+    ) {
+        let script = format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == "pr view 17 --json number,state,url,isDraft --repo {repo_slug}" ]]; then
+  printf '%s\n' '{{"number":17,"state":"OPEN","url":"https://github.com/{repo_slug}/pull/17"}}'
+  exit 0
+fi
+if [[ "$1 $2 $3" == "api --method POST" && "$4" == "repos/{repo_slug}/issues/17/comments" && "$5" == "--input" ]]; then
+  cp "$6" "{captured_request}"
+  printf '%s\n' '{{"id":12345}}'
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
+exit 1
+"#,
+            repo_slug = repo_slug,
+            captured_request = captured_request.display()
         );
         write_executable(&bin_dir.join("gh"), &script);
     }
