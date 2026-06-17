@@ -1,0 +1,1 @@
+- Changed plan sync to post comments to open draft pull requests instead of leaving captured plan items queued until the PR is marked ready for review.

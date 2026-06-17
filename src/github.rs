@@ -18,9 +18,6 @@ pub enum SyncStatus {
         number: u64,
         state: String,
     },
-    DraftPullRequest {
-        number: u64,
-    },
     Unchanged {
         number: u64,
     },
@@ -35,8 +32,6 @@ pub enum SyncStatus {
 struct PullRequest {
     number: u64,
     state: String,
-    #[serde(default, rename = "isDraft")]
-    is_draft: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,12 +81,6 @@ fn sync_to_pull_request(
             state: pull_request.state,
         });
     }
-    if pull_request.is_draft {
-        return Ok(SyncStatus::DraftPullRequest {
-            number: pull_request.number,
-        });
-    }
-
     let (comment_body, item_ids, item_count) = {
         let items = state.unposted_items_for_pr(pull_request.number);
         if items.is_empty() {

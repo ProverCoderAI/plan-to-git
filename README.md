@@ -5,9 +5,9 @@
 The MVP supports Codex and Claude Code:
 
 - reads Codex or Claude Code hook JSON from stdin;
-- captures only explicit plan blocks such as `<proposed_plan>...</proposed_plan>`, `<proposed_plan title="...">...</proposed_plan>`, or `## Accepted Plan`;
+- captures explicit plan blocks such as `<proposed_plan>...</proposed_plan>`, `<proposed_plan title="...">...</proposed_plan>`, or `## Accepted Plan`, plus structured Codex planner updates from `import-codex`;
 - stores captured plans and planning Q/A decisions in a per-repository state file;
-- posts a new PR comment with newly captured current-branch items when a valid (open, non-draft) PR exists;
+- posts a new PR comment with newly captured current-branch items when an open PR exists, including draft PRs;
 - leaves the local stack queued when no valid PR exists yet.
 
 ## CLI
@@ -94,7 +94,7 @@ If an agent emits known XML-style plan sections (`summary`, `flow`, `test_plan`,
 
 ## Pull Request Comments
 
-When `gh pr view` finds an open, non-draft PR for the current branch, `plan-to-git` creates a new issue comment on that PR containing items that have not been posted before:
+When `gh pr view` finds an open PR for the current branch, including a draft PR, `plan-to-git` creates a new issue comment on that PR containing items that have not been posted before:
 
 ```markdown
 ## Agent Plan Update
@@ -106,10 +106,10 @@ Use `plan-to-git sync --pr 7` to post queued current-branch items to a specific 
 
 Use `--repo owner/repo` or `PLAN_TO_GIT_REPO=owner/repo` when the local `origin` remote is not the pull request target repository, for example in fork-origin workflows. The explicit repository only selects the GitHub PR/comment target; local state and history matching remain tied to the current checkout.
 
-The PR description is not edited. Closed, merged, or still-draft pull requests are not commented on; new items stay queued until the PR is valid (open and marked ready for review). After a comment is created, the local state file records the posted item hashes and GitHub comment id so repeated `sync`, `hook`, `import-codex`, or `import-claude` runs do not post the same plan again, including on a later PR.
+The PR description is not edited. Closed or merged pull requests are not commented on; new items stay queued until an open PR exists. After a comment is created, the local state file records the posted item hashes and GitHub comment id so repeated `sync`, `hook`, `import-codex`, or `import-claude` runs do not post the same plan again, including on a later PR.
 
 ## Safety
 
-The hook path only uses stable hook payload fields, explicitly marked plan text, and Claude Plan Mode transcript artifacts. `import-codex` can backfill previous plans from `~/.codex/sessions`; `import-claude` can backfill from Claude Code transcript files under the active Claude config directory. Both importers only read sessions that match the current repository and branch when branch metadata is available, and they still import only explicit markers such as `<proposed_plan>...</proposed_plan>`, `<proposed_plan title="...">...</proposed_plan>`, `## Accepted Plan`, or Claude Code's native Plan Mode output.
+The hook path only uses stable hook payload fields, explicitly marked plan text, and Claude Plan Mode transcript artifacts. `import-codex` can backfill previous plans from `~/.codex/sessions`, including structured Codex `update_plan` planner calls; `import-claude` can backfill from Claude Code transcript files under the active Claude config directory. Both importers only read sessions that match the current repository and branch when branch metadata is available, and they still import only explicit markers such as `<proposed_plan>...</proposed_plan>`, `<proposed_plan title="...">...</proposed_plan>`, `## Accepted Plan`, Codex planner calls, or Claude Code's native Plan Mode output.
 
 Captured content is redacted before local storage and PR sync. The local state file also acts as the sent-plan registry: content hashes prevent the same plan from being added and commented again.
